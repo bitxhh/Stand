@@ -1,0 +1,44 @@
+cmake_minimum_required(VERSION 3.16)
+project(Stand)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.10.0/mingw_64")
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
+set(LIMESUITE_ROOT "C:/LimeSuite")
+include_directories(${LIMESUITE_ROOT}/include)
+link_directories(${LIMESUITE_ROOT}/lib)
+
+add_executable(Stand
+        Application/Application.cpp
+        Application/Application.h
+        main.cpp
+        LimeCore/LimeManager.cpp
+        LimeCore/LimeManager.h
+)
+
+target_link_libraries(Stand
+        PRIVATE
+        Qt6::Widgets
+        LimeSuite.lib
+)
+
+add_custom_command(TARGET Stand POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${LIMESUITE_ROOT}/bin/LimeSuite.dll"
+        $<TARGET_FILE_DIR:Stand>
+        COMMENT "Copying LimeSuite.dll to build directory"
+)
+add_custom_command(TARGET Stand POST_BUILD
+        COMMAND "C:/Qt/6.10.0/mingw_64/bin/windeployqt.exe"
+        --no-translations
+        --no-opengl-sw
+        "$<TARGET_FILE:Stand>"
+        COMMENT "Запуск windeployqt для Stand"
+)
