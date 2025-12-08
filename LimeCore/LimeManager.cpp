@@ -43,6 +43,26 @@ void Device::init_device() {
     }
 }
 
+void Device::calibrate(double sampleRateHz) {
+    if (sampleRateHz <= 0) {
+        throw std::invalid_argument("Sample rate must be greater than zero");
+    }
+
+    init_device();
+
+    if (LMS_SetSampleRate(device, sampleRateHz, 0) != 0) {
+        throw std::runtime_error("Failed to set sample rate");
+    }
+
+    if (LMS_Calibrate(device, false, 0, sampleRateHz, 0) != 0) {
+        throw std::runtime_error("Failed to calibrate RX channel");
+    }
+
+    if (LMS_Calibrate(device, true, 0, sampleRateHz, 0) != 0) {
+        throw std::runtime_error("Failed to calibrate TX channel");
+    }
+}
+
 const std::string& Device::GetSerial() const {
     return serial;
 }
@@ -101,6 +121,8 @@ void LimeManager::remove_device_at_index(std::size_t index) {
 }
 
 void LimeManager::refresh_devices() {
+    std::lock_guard lock(devicesMutex_);
+
     int deviceCount = LMS_GetDeviceList(nullptr);
     if (deviceCount < 0) {
         throw std::runtime_error("Failed to get device list");
@@ -136,11 +158,13 @@ void LimeManager::refresh_devices() {
     }
 }
 
-const std::vector<std::shared_ptr<Device>>& LimeManager::get_devices() const {
+std::vector<std::shared_ptr<Device>> LimeManager::get_devices() const {
+    std::lock_guard lock(devicesMutex_);
     return devices_;
 }
 
 std::vector<std::string> LimeManager::get_device_ids() const {
+    std::lock_guard lock(devicesMutex_);
     std::vector<std::string> ids;
     ids.reserve(devices_.size());
     for (const auto& device : devices_) {
