@@ -1,11 +1,14 @@
 #pragma once
 
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QLabel>
 #include <QListWidget>
+#include <QHBoxLayout>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -22,13 +25,18 @@ public:
     signals:
         void deviceDisconnected();
 
-private slots:
-    void checkDeviceConnection();
+    private slots:
+        void checkDeviceConnection();
 
-private:
-    std::shared_ptr<Device> device;
-    LimeManager& manager;
-    QTimer* connectionTimer{nullptr};
+    private:
+        std::shared_ptr<Device> device;
+        LimeManager& manager;
+        QListWidget* functionList{nullptr};
+        QStackedWidget* contentStack{nullptr};
+        QWidget* deviceInfoPage{nullptr};
+        QTimer* connectionTimer{nullptr};
+
+        QWidget* createDeviceInfoPage();
 };
 
 class DeviceSelectionWindow : public QWidget {
