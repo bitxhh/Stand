@@ -10,12 +10,14 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <memory>
+
 #include "../LimeCore/LimeManager.h"
 
 class DeviceDetailWindow : public QMainWindow {
     Q_OBJECT
 public:
-    DeviceDetailWindow(std::string serial, std::string info, LimeManager& manager, QWidget* parent = nullptr);
+    DeviceDetailWindow(std::shared_ptr<Device> device, LimeManager& manager, QWidget* parent = nullptr);
 
     signals:
         void deviceDisconnected();
@@ -24,7 +26,7 @@ private slots:
     void checkDeviceConnection();
 
 private:
-    std::string serial;
+    std::shared_ptr<Device> device;
     LimeManager& manager;
     QTimer* connectionTimer{nullptr};
 };
@@ -36,7 +38,7 @@ public:
 
 private slots:
     void refreshDevices();
-    void openDevice(const std::string& serial, const std::string& info);
+    void openDevice(const std::shared_ptr<Device>& device);
 
 private:
     QLabel* statusLabel{nullptr};

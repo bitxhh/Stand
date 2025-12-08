@@ -90,7 +90,7 @@ LimeManager::~LimeManager() {
 void LimeManager::add_device(const lms_info_str_t& id) {
     // device_ids_.emplace_back(); // Удалено
     // std::memcpy(device_ids_.back(), id, sizeof(lms_info_str_t)); // Удалено
-    devices_.emplace_back(id);
+    devices_.emplace_back(std::make_shared<Device>(id));
 }
 
 void LimeManager::remove_device_at_index(std::size_t index) {
@@ -114,7 +114,7 @@ void LimeManager::refresh_devices() {
     // Remove devices that are no longer present.
     for (std::size_t i = 0; i < devices_.size();) {
         const bool still_connected = std::any_of(current.begin(), current.end(), [&](const lms_info_str_t& id) {
-            return ids_equal(id, devices_[i].GetInfo());
+            return ids_equal(id, devices_[i]->GetInfo());
         });
 
         if (!still_connected) {
@@ -126,8 +126,8 @@ void LimeManager::refresh_devices() {
 
     // Add newly discovered devices.
     for (const auto& id : current) {
-        const bool already_known = std::any_of(devices_.begin(), devices_.end(), [&](const Device& device) {
-            return ids_equal(device.GetInfo(), id);
+        const bool already_known = std::any_of(devices_.begin(), devices_.end(), [&](const std::shared_ptr<Device>& device) {
+            return ids_equal(device->GetInfo(), id);
         });
 
         if (!already_known) {
@@ -136,7 +136,7 @@ void LimeManager::refresh_devices() {
     }
 }
 
-const std::vector<Device>& LimeManager::get_devices() const {
+const std::vector<std::shared_ptr<Device>>& LimeManager::get_devices() const {
     return devices_;
 }
 
@@ -144,7 +144,7 @@ std::vector<std::string> LimeManager::get_device_ids() const {
     std::vector<std::string> ids;
     ids.reserve(devices_.size());
     for (const auto& device : devices_) {
-        ids.emplace_back(device.GetInfo());
+        ids.emplace_back(device->GetInfo());
     }
     return ids;
 }

@@ -50,7 +50,7 @@ public:
      */
     void refresh_devices();
 
-    [[nodiscard]] const std::vector<Device>& get_devices() const;
+    [[nodiscard]] const std::vector<std::shared_ptr<Device>>& get_devices() const;
     [[nodiscard]] std::vector<std::string> get_device_ids() const;
 
 private:
@@ -61,6 +61,6 @@ private:
 
     // Owning vectors ensure automatic cleanup via RAII without having to track dynamic allocations manually.
     //std::vector<lms_info_str_t> device_ids_;
-    std::vector<Device> devices_;
+    std::vector<std::shared_ptr<Device>> devices_;
 };
 
