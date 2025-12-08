@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -28,6 +29,7 @@ public:
     ~Device();
 
     void init_device();
+    void calibrate(double sampleRateHz);
     [[nodiscard]] const std::string& GetSerial() const;
     [[nodiscard]] const lms_info_str_t& GetInfo() const { return device_id; }
     static std::string GetDeviceSerial(const lms_info_str_t infoStr);
@@ -50,7 +52,7 @@ public:
      */
     void refresh_devices();
 
-    [[nodiscard]] const std::vector<std::shared_ptr<Device>>& get_devices() const;
+    [[nodiscard]] std::vector<std::shared_ptr<Device>> get_devices() const;
     [[nodiscard]] std::vector<std::string> get_device_ids() const;
 
 private:
@@ -62,5 +64,6 @@ private:
     // Owning vectors ensure automatic cleanup via RAII without having to track dynamic allocations manually.
     //std::vector<lms_info_str_t> device_ids_;
     std::vector<std::shared_ptr<Device>> devices_;
+    mutable std::mutex devicesMutex_;
 };
 

@@ -2,6 +2,8 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QDoubleSpinBox>
+#include <QFutureWatcher>
 #include <QLabel>
 #include <QListWidget>
 #include <QHBoxLayout>
@@ -12,6 +14,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrent/QtConcurrent>
 
 #include <memory>
 
@@ -34,9 +37,17 @@ public:
         QListWidget* functionList{nullptr};
         QStackedWidget* contentStack{nullptr};
         QWidget* deviceInfoPage{nullptr};
+        QWidget* deviceControlPage{nullptr};
         QTimer* connectionTimer{nullptr};
+        QFutureWatcher<std::vector<std::shared_ptr<Device>>> connectionWatcher;
+        QLabel* initStatusLabel{nullptr};
+        QDoubleSpinBox* sampleRateInput{nullptr};
 
         QWidget* createDeviceInfoPage();
+        QWidget* createDeviceControlPage();
+        void initializeDevice();
+        void calibrateDevice();
+        void handleConnectionCheckFinished();
 };
 
 class DeviceSelectionWindow : public QWidget {
@@ -52,6 +63,7 @@ private:
     QLabel* statusLabel{nullptr};
     QListWidget* deviceList{nullptr};
     QTimer* refreshTimer{nullptr};
+    QFutureWatcher<std::vector<std::shared_ptr<Device>>> refreshWatcher;
     LimeManager& manager;
 };
 

@@ -9,7 +9,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.10.0/mingw_64")
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
 
 set(LIMESUITE_ROOT "C:/LimeSuite")
 include_directories(${LIMESUITE_ROOT}/include)
@@ -26,6 +26,7 @@ add_executable(Stand
 target_link_libraries(Stand
         PRIVATE
         Qt6::Widgets
+        Qt6::Concurrent
         LimeSuite.lib
 )
 
