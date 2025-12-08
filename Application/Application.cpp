@@ -8,14 +8,36 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManag
     , device(std::move(device))
     , manager(manager) {
     setWindowTitle(QString::fromStdString(this->device->GetSerial()));
+
     auto* central = new QWidget(this);
-    auto* layout = new QVBoxLayout(central);
+    auto* mainLayout = new QHBoxLayout(central);
 
-    auto* infoLabel = new QLabel(QString("Serial: %1").arg(QString::fromStdString(this->device->GetSerial())), central);
-    auto* detailLabel = new QLabel(QString("Info: %1").arg(QString::fromStdString(std::string(this->device->GetInfo()))), central);
+    functionList = new QListWidget(central);
+    functionList->setFixedWidth(200);
+    functionList->setSelectionMode(QAbstractItemView::SingleSelection);
+    functionList->setSpacing(4);
 
-    layout->addWidget(infoLabel);
-    layout->addWidget(detailLabel);
+    auto* deviceInfoItem = new QListWidgetItem("Device info", functionList);
+    deviceInfoItem->setSizeHint(QSize(0, 48));
+
+    contentStack = new QStackedWidget(central);
+    auto* emptyPage = new QWidget(contentStack);
+    contentStack->addWidget(emptyPage);
+
+    deviceInfoPage = createDeviceInfoPage();
+    contentStack->addWidget(deviceInfoPage);
+
+    connect(functionList, &QListWidget::itemClicked, this, [this, deviceInfoItem](QListWidgetItem* item) {
+        if (item == deviceInfoItem) {
+            contentStack->setCurrentWidget(deviceInfoPage);
+        }
+    });
+
+    functionList->clearSelection();
+    contentStack->setCurrentIndex(0);
+
+    mainLayout->addWidget(functionList);
+    mainLayout->addWidget(contentStack, 1);
 
     setCentralWidget(central);
 
@@ -23,6 +45,26 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManag
     connectionTimer->setInterval(1000);
     connect(connectionTimer, &QTimer::timeout, this, &DeviceDetailWindow::checkDeviceConnection);
     connectionTimer->start();
+}
+
+QWidget* DeviceDetailWindow::createDeviceInfoPage() {
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* title = new QLabel("Device info", page);
+    title->setStyleSheet("font-weight: 600; font-size: 16px;");
+
+    auto* serialLabel = new QLabel(QString("Serial: %1").arg(QString::fromStdString(this->device->GetSerial())), page);
+    auto* detailLabel = new QLabel(QString("Info: %1").arg(QString::fromStdString(std::string(this->device->GetInfo()))), page);
+    detailLabel->setWordWrap(true);
+
+    layout->addWidget(title);
+    layout->addSpacing(8);
+    layout->addWidget(serialLabel);
+    layout->addWidget(detailLabel);
+    layout->addStretch();
+
+    return page;
 }
 
 void DeviceDetailWindow::checkDeviceConnection() {
