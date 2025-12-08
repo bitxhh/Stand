@@ -29,6 +29,7 @@ public:
     ~Device();
 
     void init_device();
+    void set_sample_rate(double sampleRateHz);
     void calibrate(double sampleRateHz);
     [[nodiscard]] const std::string& GetSerial() const;
     [[nodiscard]] const lms_info_str_t& GetInfo() const { return device_id; }
