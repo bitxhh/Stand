@@ -12,8 +12,11 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManag
     auto* central = new QWidget(this);
     auto* mainLayout = new QHBoxLayout(central);
 
+    auto* splitter = new QSplitter(Qt::Horizontal, central);
+    splitter->setChildrenCollapsible(false);
+
     functionList = new QListWidget(central);
-    functionList->setFixedWidth(200);
+    functionList->setMinimumWidth(160);
     functionList->setSelectionMode(QAbstractItemView::SingleSelection);
     functionList->setSpacing(4);
 
@@ -43,8 +46,12 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManag
     functionList->clearSelection();
     contentStack->setCurrentIndex(0);
 
-    mainLayout->addWidget(functionList);
-    mainLayout->addWidget(contentStack, 1);
+    splitter->addWidget(functionList);
+    splitter->addWidget(contentStack);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+
+    mainLayout->addWidget(splitter);
 
     setCentralWidget(central);
 
@@ -108,6 +115,7 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     auto* initButton = new QPushButton("Initialize device", page);
     auto* calibrateButton = new QPushButton("Calibrate", page);
 
+    connect(sampleRateInput, &QDoubleSpinBox::editingFinished, this, &DeviceDetailWindow::applySampleRate);
     connect(initButton, &QPushButton::clicked, this, &DeviceDetailWindow::initializeDevice);
     connect(calibrateButton, &QPushButton::clicked, this, &DeviceDetailWindow::calibrateDevice);
 
@@ -142,6 +150,16 @@ void DeviceDetailWindow::calibrateDevice() {
         QMessageBox::information(this, "Calibration", "Calibration completed successfully.");
     } catch (const std::exception& ex) {
         QMessageBox::critical(this, "Calibration error", QString::fromStdString(ex.what()));
+    }
+}
+
+void DeviceDetailWindow::applySampleRate() {
+    const double sampleRate = sampleRateInput->value();
+    try {
+        device->set_sample_rate(sampleRate);
+        QMessageBox::information(this, "Sample rate", "Sample rate applied successfully.");
+    } catch (const std::exception& ex) {
+        QMessageBox::critical(this, "Sample rate error", QString::fromStdString(ex.what()));
     }
 }
 

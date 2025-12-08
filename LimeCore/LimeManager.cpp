@@ -44,6 +44,18 @@ void Device::init_device() {
 }
 
 void Device::calibrate(double sampleRateHz) {
+    set_sample_rate(sampleRateHz);
+
+    if (LMS_Calibrate(device, false, 0, sampleRateHz, 0) != 0) {
+        throw std::runtime_error("Failed to calibrate RX channel");
+    }
+
+    if (LMS_Calibrate(device, true, 0, sampleRateHz, 0) != 0) {
+        throw std::runtime_error("Failed to calibrate TX channel");
+    }
+}
+
+void Device::set_sample_rate(double sampleRateHz) {
     if (sampleRateHz <= 0) {
         throw std::invalid_argument("Sample rate must be greater than zero");
     }
@@ -52,14 +64,6 @@ void Device::calibrate(double sampleRateHz) {
 
     if (LMS_SetSampleRate(device, sampleRateHz, 0) != 0) {
         throw std::runtime_error("Failed to set sample rate");
-    }
-
-    if (LMS_Calibrate(device, false, 0, sampleRateHz, 0) != 0) {
-        throw std::runtime_error("Failed to calibrate RX channel");
-    }
-
-    if (LMS_Calibrate(device, true, 0, sampleRateHz, 0) != 0) {
-        throw std::runtime_error("Failed to calibrate TX channel");
     }
 }
 

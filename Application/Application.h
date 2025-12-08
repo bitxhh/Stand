@@ -13,6 +13,7 @@
 #include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QSplitter>
 #include <QWidget>
 #include <QtConcurrent/QtConcurrent>
 
@@ -47,6 +48,7 @@ public:
         QWidget* createDeviceControlPage();
         void initializeDevice();
         void calibrateDevice();
+        void applySampleRate();
         void handleConnectionCheckFinished();
 };
 
