@@ -32,6 +32,8 @@ public:
     void set_sample_rate(double sampleRateHz);
     void calibrate(double sampleRateHz);
     void set_channels(unsigned rxChannelIndex, unsigned txChannelIndex);
+    double get_sample_rate();
+    [[nodiscard]] bool is_initialized() const { return device != nullptr; }
 
     enum class FilterPath { Low, High, Wide };
     void set_paths(FilterPath rxPath, FilterPath txPath);

@@ -74,10 +74,14 @@ QWidget* DeviceDetailWindow::createDeviceInfoPage() {
     auto* detailLabel = new QLabel(QString("Info: %1").arg(QString::fromStdString(std::string(this->device->GetInfo()))), page);
     detailLabel->setWordWrap(true);
 
+    currentSampleRateLabel = new QLabel(page);
+    refreshCurrentSampleRate();
+
     layout->addWidget(title);
     layout->addSpacing(8);
     layout->addWidget(serialLabel);
     layout->addWidget(detailLabel);
+    layout->addWidget(currentSampleRateLabel);
     layout->addStretch();
 
     return page;
@@ -163,6 +167,7 @@ void DeviceDetailWindow::initializeDevice() {
     try {
         device->init_device();
         initStatusLabel->setText("Device initialized");
+        refreshCurrentSampleRate();
         QMessageBox::information(this, "Initialization", "Device initialized successfully.");
     } catch (const std::exception& ex) {
         QMessageBox::critical(this, "Initialization error", QString::fromStdString(ex.what()));
@@ -173,6 +178,7 @@ void DeviceDetailWindow::calibrateDevice() {
     const double sampleRate = sampleRateInput->value();
     try {
         device->calibrate(sampleRate);
+        refreshCurrentSampleRate();
         QMessageBox::information(this, "Calibration", "Calibration completed successfully.");
     } catch (const std::exception& ex) {
         QMessageBox::critical(this, "Calibration error", QString::fromStdString(ex.what()));
@@ -183,6 +189,7 @@ void DeviceDetailWindow::applySampleRate() {
     const double sampleRate = sampleRateInput->value();
     try {
         device->set_sample_rate(sampleRate);
+        refreshCurrentSampleRate();
         QMessageBox::information(this, "Sample rate", "Sample rate applied successfully.");
     } catch (const std::exception& ex) {
         QMessageBox::critical(this, "Sample rate error", QString::fromStdString(ex.what()));
@@ -198,6 +205,24 @@ void DeviceDetailWindow::applyChannels() {
         QMessageBox::information(this, "Channels", "Channel selection applied successfully.");
     } catch (const std::exception& ex) {
         QMessageBox::critical(this, "Channel error", QString::fromStdString(ex.what()));
+    }
+}
+
+void DeviceDetailWindow::refreshCurrentSampleRate() {
+    if (currentSampleRateLabel == nullptr) {
+        return;
+    }
+
+    if (!device->is_initialized()) {
+        currentSampleRateLabel->setText("Current sample rate: device is not initialized yet");
+        return;
+    }
+
+    try {
+        const double currentSampleRate = device->get_sample_rate();
+        currentSampleRateLabel->setText(QString("Current sample rate: %1 Hz").arg(currentSampleRate, 0, 'f', 0));
+    } catch (const std::exception& ex) {
+        currentSampleRateLabel->setText(QString("Current sample rate: %1").arg(QString::fromStdString(ex.what())));
     }
 }
 
