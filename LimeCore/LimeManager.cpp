@@ -63,7 +63,9 @@ void Device::set_sample_rate(double sampleRateHz) {
         throw std::invalid_argument("Sample rate must be greater than zero");
     }
 
-    init_device();
+    if (device == nullptr) {
+        throw std::runtime_error("Device not initialized");
+    }
 
     if (LMS_SetSampleRate(device, sampleRateHz, 0) != 0) {
         throw std::runtime_error("Failed to set sample rate");
@@ -77,6 +79,21 @@ void Device::set_channels(unsigned rxChannelIndex, unsigned txChannelIndex) {
     if (device != nullptr) {
         apply_channel_config();
     }
+}
+
+double Device::get_sample_rate() {
+    if (device == nullptr) {
+        throw std::runtime_error("Device not initialized");
+    }
+
+    double hostSampleRate = 0.0;
+    double rfSampleRate = 0.0;
+
+    if (LMS_GetSampleRate(device, false, rxChannel, &hostSampleRate, &rfSampleRate) != 0) {
+        throw std::runtime_error("Failed to read sample rate");
+    }
+
+    return hostSampleRate;
 }
 
 void Device::set_paths(FilterPath rxPathSelection, FilterPath txPathSelection) {

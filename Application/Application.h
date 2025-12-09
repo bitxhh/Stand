@@ -43,6 +43,7 @@ public:
         QTimer* connectionTimer{nullptr};
         QFutureWatcher<std::vector<std::shared_ptr<Device>>> connectionWatcher;
         QLabel* initStatusLabel{nullptr};
+        QLabel* currentSampleRateLabel{nullptr};
         QDoubleSpinBox* sampleRateInput{nullptr};
         QComboBox* rxChannelSelector{nullptr};
         QComboBox* txChannelSelector{nullptr};
@@ -51,6 +52,7 @@ public:
 
         QWidget* createDeviceInfoPage();
         QWidget* createDeviceControlPage();
+        void refreshCurrentSampleRate();
         void initializeDevice();
         void calibrateDevice();
         void applySampleRate();
