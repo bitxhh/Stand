@@ -30,6 +30,7 @@ void Device::init_device() {
     }
 
     if (device != nullptr) {
+        apply_channel_config();
         return;
     }
 
@@ -41,16 +42,18 @@ void Device::init_device() {
         LMS_Close(device);
         throw std::runtime_error("Failed to init device");
     }
+
+    apply_channel_config();
 }
 
 void Device::calibrate(double sampleRateHz) {
     set_sample_rate(sampleRateHz);
 
-    if (LMS_Calibrate(device, false, 0, sampleRateHz, 0) != 0) {
+    if (LMS_Calibrate(device, false, rxChannel, sampleRateHz, 0) != 0) {
         throw std::runtime_error("Failed to calibrate RX channel");
     }
 
-    if (LMS_Calibrate(device, true, 0, sampleRateHz, 0) != 0) {
+    if (LMS_Calibrate(device, true, txChannel, sampleRateHz, 0) != 0) {
         throw std::runtime_error("Failed to calibrate TX channel");
     }
 }
@@ -64,6 +67,63 @@ void Device::set_sample_rate(double sampleRateHz) {
 
     if (LMS_SetSampleRate(device, sampleRateHz, 0) != 0) {
         throw std::runtime_error("Failed to set sample rate");
+    }
+}
+
+void Device::set_channels(unsigned rxChannelIndex, unsigned txChannelIndex) {
+    rxChannel = rxChannelIndex;
+    txChannel = txChannelIndex;
+
+    if (device != nullptr) {
+        apply_channel_config();
+    }
+}
+
+void Device::set_paths(FilterPath rxPathSelection, FilterPath txPathSelection) {
+    rxPath = rxPathSelection;
+    txPath = txPathSelection;
+
+    if (device != nullptr) {
+        apply_channel_config();
+    }
+}
+
+void Device::apply_channel_config() {
+    // Enable only selected channels.
+    for (unsigned ch = 0; ch < 2; ++ch) {
+        LMS_EnableChannel(device, false, ch, ch == rxChannel);
+        LMS_EnableChannel(device, true, ch, ch == txChannel);
+    }
+
+    if (LMS_SetAntenna(device, false, rxChannel, map_filter_path(false, rxPath)) != 0) {
+        throw std::runtime_error("Failed to select RX filter path");
+    }
+
+    if (LMS_SetAntenna(device, true, txChannel, map_filter_path(true, txPath)) != 0) {
+        throw std::runtime_error("Failed to select TX filter path");
+    }
+}
+
+int Device::map_filter_path(bool isTx, FilterPath path) {
+    if (isTx) {
+        switch (path) {
+        case FilterPath::High:
+            return LMS_PATH_TX2;
+        case FilterPath::Low:
+        case FilterPath::Wide:
+        default:
+            return LMS_PATH_TX1;
+        }
+    }
+
+    switch (path) {
+    case FilterPath::Low:
+        return LMS_PATH_LNAL;
+    case FilterPath::High:
+        return LMS_PATH_LNAH;
+    case FilterPath::Wide:
+    default:
+        return LMS_PATH_LNAW;
     }
 }
 
