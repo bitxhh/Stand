@@ -10,6 +10,7 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QComboBox>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -43,12 +44,18 @@ public:
         QFutureWatcher<std::vector<std::shared_ptr<Device>>> connectionWatcher;
         QLabel* initStatusLabel{nullptr};
         QDoubleSpinBox* sampleRateInput{nullptr};
+        QComboBox* rxChannelSelector{nullptr};
+        QComboBox* txChannelSelector{nullptr};
+        QComboBox* rxPathSelector{nullptr};
+        QComboBox* txPathSelector{nullptr};
 
         QWidget* createDeviceInfoPage();
         QWidget* createDeviceControlPage();
         void initializeDevice();
         void calibrateDevice();
         void applySampleRate();
+        void applyChannels();
+        void applyPaths();
         void handleConnectionCheckFinished();
 };
 

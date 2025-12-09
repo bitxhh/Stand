@@ -112,10 +112,28 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     sampleRateInput->setValue(5000000);
     sampleRateInput->setSuffix(" Hz");
 
+    rxChannelSelector = new QComboBox(page);
+    rxChannelSelector->addItems({"RX channel 0", "RX channel 1"});
+
+    txChannelSelector = new QComboBox(page);
+    txChannelSelector->addItems({"TX channel 0", "TX channel 1"});
+
+    rxPathSelector = new QComboBox(page);
+    rxPathSelector->addItems({"RX Low", "RX High", "RX Wide"});
+    rxPathSelector->setCurrentIndex(2);
+
+    txPathSelector = new QComboBox(page);
+    txPathSelector->addItems({"TX Low", "TX High", "TX Wide"});
+    txPathSelector->setCurrentIndex(2);
+
     auto* initButton = new QPushButton("Initialize device", page);
     auto* calibrateButton = new QPushButton("Calibrate", page);
 
     connect(sampleRateInput, &QDoubleSpinBox::editingFinished, this, &DeviceDetailWindow::applySampleRate);
+    connect(rxChannelSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyChannels);
+    connect(txChannelSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyChannels);
+    connect(rxPathSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyPaths);
+    connect(txPathSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyPaths);
     connect(initButton, &QPushButton::clicked, this, &DeviceDetailWindow::initializeDevice);
     connect(calibrateButton, &QPushButton::clicked, this, &DeviceDetailWindow::calibrateDevice);
 
@@ -125,6 +143,14 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addSpacing(12);
     layout->addWidget(new QLabel("Sample rate", page));
     layout->addWidget(sampleRateInput);
+    layout->addSpacing(8);
+    layout->addWidget(new QLabel("Channel selection", page));
+    layout->addWidget(rxChannelSelector);
+    layout->addWidget(txChannelSelector);
+    layout->addSpacing(8);
+    layout->addWidget(new QLabel("Filter path", page));
+    layout->addWidget(rxPathSelector);
+    layout->addWidget(txPathSelector);
     layout->addSpacing(12);
     layout->addWidget(initButton);
     layout->addWidget(calibrateButton);
@@ -160,6 +186,42 @@ void DeviceDetailWindow::applySampleRate() {
         QMessageBox::information(this, "Sample rate", "Sample rate applied successfully.");
     } catch (const std::exception& ex) {
         QMessageBox::critical(this, "Sample rate error", QString::fromStdString(ex.what()));
+    }
+}
+
+void DeviceDetailWindow::applyChannels() {
+    const unsigned rxIndex = static_cast<unsigned>(rxChannelSelector->currentIndex());
+    const unsigned txIndex = static_cast<unsigned>(txChannelSelector->currentIndex());
+
+    try {
+        device->set_channels(rxIndex, txIndex);
+        QMessageBox::information(this, "Channels", "Channel selection applied successfully.");
+    } catch (const std::exception& ex) {
+        QMessageBox::critical(this, "Channel error", QString::fromStdString(ex.what()));
+    }
+}
+
+static Device::FilterPath indexToPath(int index) {
+    switch (index) {
+    case 0:
+        return Device::FilterPath::Low;
+    case 1:
+        return Device::FilterPath::High;
+    case 2:
+    default:
+        return Device::FilterPath::Wide;
+    }
+}
+
+void DeviceDetailWindow::applyPaths() {
+    const auto rxSelection = indexToPath(rxPathSelector->currentIndex());
+    const auto txSelection = indexToPath(txPathSelector->currentIndex());
+
+    try {
+        device->set_paths(rxSelection, txSelection);
+        QMessageBox::information(this, "Filter path", "Filter paths applied successfully.");
+    } catch (const std::exception& ex) {
+        QMessageBox::critical(this, "Filter path error", QString::fromStdString(ex.what()));
     }
 }
 
