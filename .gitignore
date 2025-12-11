@@ -1,0 +1,44 @@
+# --- BUILD DIRECTORIES ---
+cmake-build-*/
+build*/
+[Cc]MakeFiles/
+[Cc]MakeCache.txt
+*.cmake
+*.a
+*.lib
+*.dll
+*.so
+*.exe
+*.o
+*.obj
+
+# --- QT GENERATED FILES ---
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+
+# Qt Creator / CLion configs
+.idea/
+*.user
+*.user.*
+*.pro.user
+*.pro.user.*
+.qtcreator/
+
+# --- OS FILES ---
+.DS_Store
+Thumbs.db
+
+# --- CMAKE TRASH ---
+CMakeFiles/
+Testing/
+Makefile
+CTestTestfile.cmake
+cmake_install.cmake
+
+# --- LOGS ---
+*.log
+
+# --- PYTHON (если случайно появится) ---
+__pycache__/
+*.pyc
