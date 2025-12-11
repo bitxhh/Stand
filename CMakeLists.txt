@@ -21,6 +21,8 @@ add_executable(Stand
         main.cpp
         LimeCore/LimeManager.cpp
         LimeCore/LimeManager.h
+        LimeCore/Device.cpp
+        LimeCore/Device.h
 )
 
 target_link_libraries(Stand
