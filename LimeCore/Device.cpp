@@ -37,65 +37,59 @@ Device::Device(const lms_info_str_t& id) : device(nullptr) {
     serial = GetDeviceSerial(id);
 }
 
-int Device::InitializeLMS()
-{
-    if (LMS_Open(&device, deviceList[currentDeviceIndex], NULL) != LMS_SUCCESS) {
-        return -1;
+void Device::init_device() {
+    if (device != nullptr) {
+        return;
     }
 
-    numOfChannels = LMS_GetNumChannels(device, LMS_CH_RX);
-    if (numOfChannels == -1) {
-        return -1;
+    if (LMS_Open(&device, device_id, nullptr) != 0) {
+        device = nullptr;
+        throw std::runtime_error("Failed to open device");
     }
 
-    if (LMS_Init(device) != LMS_SUCCESS) {
-        return -1;
-    }
-    if (LMS_SetSampleRate(device, sampleRates[sr_idx], oversample) != LMS_SUCCESS) {
-        return -1;
-    }
-
-    if (LMS_EnableChannel(device, LMS_CH_RX, channel, true) != LMS_SUCCESS) {
-        return -1;
-    }
-    /* TX channel needs to be enabled for LPF and calibration */
-    if (LMS_EnableChannel(device, LMS_CH_TX, channel, true) != LMS_SUCCESS) {
-        return -1;
-    }
-    if (LMS_SetAntenna(device, LMS_CH_RX, channel, ant_select) != LMS_SUCCESS) {
-        return -1;
+    if (LMS_Init(device) != 0) {
+        LMS_Close(device);
+        device = nullptr;
+        throw std::runtime_error("Failed to initialize device");
     }
 
-    if (LPFenable) {
-        if (EnableLPF() != 0)
-            return -1;
-    }
-    else {
-        if (DisableLPF() != 0)
-            return -1;
-    }
-    if (SetGain() != 0)
-        return -1;
-
-    if (LMS_SetLOFrequency(device, LMS_CH_RX, channel, float_type(CurrentLOfreq)) != LMS_SUCCESS) {
-        return -1;
-    }
-    PerformCalibration(false);
-
-    return 0;
+    apply_channel_config();
 }
 
 void Device::calibrate(double sampleRateHz) {
+    init_device();
+
+    // Keep the analog filters and calibration bandwidth aligned with the current sample rate
+    // similarly to the sequence used in the ExtIO LimeSDR reference implementation.
     set_sample_rate(sampleRateHz);
 
-    if (LMS_Calibrate(device, false, rxChannel, sampleRateHz, 0) != 0) {
+    const double bandwidth = sampleRateHz / 2.0;
+    if (LMS_SetLPFBW(device, false, rxChannel, bandwidth) != 0) {
+        throw std::runtime_error("Failed to set RX LPF bandwidth before calibration");
+    }
+
+    if (LMS_SetLPFBW(device, true, txChannel, bandwidth) != 0) {
+        throw std::runtime_error("Failed to set TX LPF bandwidth before calibration");
+    }
+
+    // Use normalized gains to keep the calibration procedure stable across boards.
+    if (LMS_SetNormalizedGain(device, false, rxChannel, 0.70) != 0) {
+        throw std::runtime_error("Failed to set RX gain before calibration");
+    }
+
+    if (LMS_SetNormalizedGain(device, true, txChannel, 0.50) != 0) {
+        throw std::runtime_error("Failed to set TX gain before calibration");
+    }
+
+    if (LMS_Calibrate(device, false, rxChannel, bandwidth, 0) != 0) {
         throw std::runtime_error("Failed to calibrate RX channel");
     }
 
-    if (LMS_Calibrate(device, true, txChannel, sampleRateHz, 0) != 0) {
+    if (LMS_Calibrate(device, true, txChannel, bandwidth, 0) != 0) {
         throw std::runtime_error("Failed to calibrate TX channel");
     }
-    isCalibrated = true;
+
+    isCalibrated = LimeManager::Calibrated;
 }
 
 void Device::set_sample_rate(double sampleRateHz) {
@@ -103,13 +97,13 @@ void Device::set_sample_rate(double sampleRateHz) {
         throw std::invalid_argument("Sample rate must be greater than zero");
     }
 
-    if (device == nullptr) {
-        throw std::runtime_error("Device not initialized");
-    }
+    init_device();
 
     if (LMS_SetSampleRate(device, sampleRateHz, 0) != 0) {
         throw std::runtime_error("Failed to set sample rate");
     }
+
+    currentSampleRate = sampleRateHz;
 }
 
 void Device::set_channels(unsigned rxChannelIndex, unsigned txChannelIndex) {
@@ -146,6 +140,10 @@ void Device::set_paths(FilterPath rxPathSelection, FilterPath txPathSelection) {
 }
 
 void Device::apply_channel_config() {
+    if (device == nullptr) {
+        throw std::runtime_error("Device not initialized");
+    }
+
     // Enable only selected channels.
     for (unsigned ch = 0; ch < 2; ++ch) {
         LMS_EnableChannel(device, false, ch, ch == rxChannel);

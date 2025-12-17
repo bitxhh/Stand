@@ -20,7 +20,7 @@ public:
 
     ~Device();
 
-    static int InitializeLMS();
+    void init_device();
     void set_sample_rate(double sampleRateHz);
     void calibrate(double sampleRateHz);
     void set_channels(unsigned rxChannelIndex, unsigned txChannelIndex);
@@ -43,6 +43,7 @@ private:
     std::string serial;
     unsigned rxChannel{0};
     unsigned txChannel{0};
+    double   currentSampleRate{0.0};
     FilterPath rxPath{FilterPath::Wide};
     FilterPath txPath{FilterPath::Wide};
     int16_t* buffer = nullptr;
