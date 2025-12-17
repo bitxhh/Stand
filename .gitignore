@@ -42,3 +42,6 @@ cmake_install.cmake
 # --- PYTHON (если случайно появится) ---
 __pycache__/
 *.pyc
+
+!external/fftw/bin/*.dll
+!external/fftw/lib/*.dll.a
