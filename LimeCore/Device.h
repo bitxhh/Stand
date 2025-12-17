@@ -5,6 +5,8 @@
 #include "lime/LimeSuite.h"
 #include <string>
 
+#include "LimeManager.h"
+
 
 class Device {
 public:
@@ -18,7 +20,7 @@ public:
 
     ~Device();
 
-    void init_device();
+    static int InitializeLMS();
     void set_sample_rate(double sampleRateHz);
     void calibrate(double sampleRateHz);
     void set_channels(unsigned rxChannelIndex, unsigned txChannelIndex);
@@ -31,6 +33,10 @@ public:
     [[nodiscard]] const lms_info_str_t& GetInfo() const { return device_id; }
     static std::string GetDeviceSerial(const lms_info_str_t infoStr);
 
+    int     isCalibrated = LimeManager::NotCalibrated;
+    bool	isRunning = false;
+    bool    LPFenable = false;
+
 private:
     lms_device_t* device{nullptr};
     lms_info_str_t device_id{};
@@ -39,6 +45,9 @@ private:
     unsigned txChannel{0};
     FilterPath rxPath{FilterPath::Wide};
     FilterPath txPath{FilterPath::Wide};
+    int16_t* buffer = nullptr;
+    LMS_LogHandler log_handler = nullptr;
+    lms_stream_t streamId;
 
     void apply_channel_config();
     static int map_filter_path(bool isTx, FilterPath path);
