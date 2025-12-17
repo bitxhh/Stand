@@ -15,6 +15,12 @@ set(LIMESUITE_ROOT "C:/LimeSuite")
 include_directories(${LIMESUITE_ROOT}/include)
 link_directories(${LIMESUITE_ROOT}/lib)
 
+set(FFTW_ROOT "C:/Users/ilya1/CLionProjects/Stand/external/FFTW")
+set(FFTW_INCLUDE_DIR "${FFTW_ROOT}/include")
+set(FFTW_LIB_DIR     "${FFTW_ROOT}/lib")
+set(FFTW_BIN_DIR     "${FFTW_ROOT}/bin")
+
+
 add_executable(Stand
         Application/Application.cpp
         Application/Application.h
@@ -24,12 +30,14 @@ add_executable(Stand
         LimeCore/Device.cpp
         LimeCore/Device.h
 )
+target_include_directories(Stand PRIVATE "${FFTW_INCLUDE_DIR}")
 
 target_link_libraries(Stand
         PRIVATE
         Qt6::Widgets
         Qt6::Concurrent
         LimeSuite.lib
+        "${FFTW_LIB_DIR}/libfftw3-3.dll.a"
 )
 
 add_custom_command(TARGET Stand POST_BUILD
@@ -44,4 +52,11 @@ add_custom_command(TARGET Stand POST_BUILD
         --no-opengl-sw
         "$<TARGET_FILE:Stand>"
         COMMENT "Запуск windeployqt для Stand"
+)
+
+add_custom_command(TARGET Stand POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${FFTW_BIN_DIR}/libfftw3-3.dll"
+        "$<TARGET_FILE_DIR:Stand>/libfftw3-3.dll"
+        COMMENT "Copying FFTW DLL"
 )
