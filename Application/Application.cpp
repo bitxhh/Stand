@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QSize>
 
 DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManager& manager, QWidget* parent)
@@ -109,12 +110,10 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
 
     initStatusLabel = new QLabel("Device not initialized", page);
 
-    sampleRateInput = new QDoubleSpinBox(page);
-    sampleRateInput->setDecimals(0);
-    sampleRateInput->setRange(1000, 100000000);
-    sampleRateInput->setSingleStep(100000);
-    sampleRateInput->setValue(5000000);
-    sampleRateInput->setSuffix(" Hz");
+    sampleRateSelector = new QComboBox(page);
+    for (double rate : manager.sampleRates) {
+        sampleRateSelector->addItem(QString("%1 Hz").arg(rate, 0, 'f', 0), rate);
+    }
 
     rxChannelSelector = new QComboBox(page);
     rxChannelSelector->addItems({"RX channel 0", "RX channel 1"});
@@ -133,7 +132,7 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     auto* initButton = new QPushButton("Initialize device", page);
     auto* calibrateButton = new QPushButton("Calibrate", page);
 
-    connect(sampleRateInput, &QDoubleSpinBox::editingFinished, this, &DeviceDetailWindow::applySampleRate);
+    connect(sampleRateSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applySampleRate);
     connect(rxChannelSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyChannels);
     connect(txChannelSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyChannels);
     connect(rxPathSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applyPaths);
@@ -146,7 +145,7 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addWidget(initStatusLabel);
     layout->addSpacing(12);
     layout->addWidget(new QLabel("Sample rate", page));
-    layout->addWidget(sampleRateInput);
+    layout->addWidget(sampleRateSelector);
     layout->addSpacing(8);
     layout->addWidget(new QLabel("Channel selection", page));
     layout->addWidget(rxChannelSelector);
@@ -175,7 +174,7 @@ void DeviceDetailWindow::initializeDevice() {
 }
 
 void DeviceDetailWindow::calibrateDevice() {
-    const double sampleRate = sampleRateInput->value();
+    const double sampleRate = sampleRateSelector->currentData().toDouble();
     try {
         device->calibrate(sampleRate);
         refreshCurrentSampleRate();
@@ -186,7 +185,7 @@ void DeviceDetailWindow::calibrateDevice() {
 }
 
 void DeviceDetailWindow::applySampleRate() {
-    const double sampleRate = sampleRateInput->value();
+    const double sampleRate = sampleRateSelector->currentData().toDouble();
     try {
         device->set_sample_rate(sampleRate);
         refreshCurrentSampleRate();
@@ -221,6 +220,15 @@ void DeviceDetailWindow::refreshCurrentSampleRate() {
     try {
         const double currentSampleRate = device->get_sample_rate();
         currentSampleRateLabel->setText(QString("Current sample rate: %1 Hz").arg(currentSampleRate, 0, 'f', 0));
+        if (sampleRateSelector != nullptr) {
+            for (int i = 0; i < sampleRateSelector->count(); ++i) {
+                const double option = sampleRateSelector->itemData(i).toDouble();
+                if (std::abs(option - currentSampleRate) < 1.0) {
+                    sampleRateSelector->setCurrentIndex(i);
+                    break;
+                }
+            }
+        }
     } catch (const std::exception& ex) {
         currentSampleRateLabel->setText(QString("Current sample rate: %1").arg(QString::fromStdString(ex.what())));
     }

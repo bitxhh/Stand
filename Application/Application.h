@@ -2,7 +2,6 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
-#include <QDoubleSpinBox>
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QListWidget>
@@ -44,7 +43,7 @@ public:
         QFutureWatcher<std::vector<std::shared_ptr<Device>>> connectionWatcher;
         QLabel* initStatusLabel{nullptr};
         QLabel* currentSampleRateLabel{nullptr};
-        QDoubleSpinBox* sampleRateInput{nullptr};
+        QComboBox* sampleRateSelector{nullptr};
         QComboBox* rxChannelSelector{nullptr};
         QComboBox* txChannelSelector{nullptr};
         QComboBox* rxPathSelector{nullptr};
