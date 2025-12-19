@@ -45,13 +45,15 @@ public:
         QLabel* currentSampleRateLabel{nullptr};
         QComboBox* sampleRateSelector{nullptr};
         QPushButton* calibrateButton{nullptr};
+        QPushButton* streamButton{nullptr};
 
 
         QWidget* createDeviceInfoPage();
         QWidget* createDeviceControlPage();
-        void refreshCurrentSampleRate();
+        void refreshCurrentSampleRate() const;
         void initializeDevice();
         void calibrateDevice();
+        void deviceStream();
         void applySampleRate();
         void handleConnectionCheckFinished();
 };

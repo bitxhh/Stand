@@ -118,14 +118,17 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
 
     auto* initButton = new QPushButton("Initialize device", page);
     calibrateButton = new QPushButton("Calibrate", page);
+    streamButton = new QPushButton("Stream", page);
 
     sampleRateSelector->setEnabled(device->is_initialized());
     calibrateButton->setEnabled(device->is_initialized());
+    streamButton->setEnabled(device->is_initialized());
 
     connect(sampleRateSelector, &QComboBox::currentIndexChanged, this, &DeviceDetailWindow::applySampleRate);
 
     connect(initButton, &QPushButton::clicked, this, &DeviceDetailWindow::initializeDevice);
     connect(calibrateButton, &QPushButton::clicked, this, &DeviceDetailWindow::calibrateDevice);
+    connect(streamButton, &QPushButton::clicked, this, &DeviceDetailWindow::deviceStream);
 
     layout->addWidget(title);
     layout->addSpacing(8);
@@ -138,9 +141,14 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addSpacing(12);
     layout->addWidget(initButton);
     layout->addWidget(calibrateButton);
+    layout->addWidget(streamButton);
     layout->addStretch();
 
     return page;
+}
+
+void DeviceDetailWindow::deviceStream() {
+    device->stream();
 }
 
 void DeviceDetailWindow::initializeDevice() {
@@ -150,6 +158,7 @@ void DeviceDetailWindow::initializeDevice() {
         refreshCurrentSampleRate();
         sampleRateSelector->setEnabled(device->is_initialized());
         calibrateButton->setEnabled(device->is_initialized());
+        streamButton->setEnabled(device->is_initialized());
 
 
         QMessageBox::information(this, "Initialization", "Device initialized successfully.");
@@ -180,7 +189,7 @@ void DeviceDetailWindow::applySampleRate() {
     }
 }
 
-void DeviceDetailWindow::refreshCurrentSampleRate() {
+void DeviceDetailWindow::refreshCurrentSampleRate() const {
     if (currentSampleRateLabel == nullptr) {
         return;
     }
@@ -209,7 +218,7 @@ void DeviceDetailWindow::refreshCurrentSampleRate() {
 
 void DeviceDetailWindow::handleConnectionCheckFinished() {
     const auto devices = connectionWatcher.result();
-    const bool connected = std::any_of(devices.begin(), devices.end(), [&](const std::shared_ptr<Device>& managedDevice) {
+    const bool connected = std::ranges::any_of(devices.begin(), devices.end(), [&](const std::shared_ptr<Device>& managedDevice) {
         return managedDevice->GetSerial() == device->GetSerial();
     });
 
@@ -222,7 +231,7 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
 DeviceSelectionWindow::DeviceSelectionWindow(LimeManager& manager, QWidget* parent)
     : QWidget(parent)
     , manager(manager) {
-    setWindowTitle("LimeManager VSU");
+    setWindowTitle("LimeManager");
 
     auto* layout = new QVBoxLayout(this);
     statusLabel = new QLabel("Searching for LimeSDR devices...", this);
@@ -295,7 +304,9 @@ void DeviceSelectionWindow::openDevice(const std::shared_ptr<Device>& device) {
 
 Application::Application(int& argc, char** argv, LimeManager& manager)
     : qtApp(argc, argv)
-    , selectionWindow(manager) {}
+    , selectionWindow(manager) {
+    QApplication::setWindowIcon(QIcon(":/assets/icon.jpg"));
+}
 
 int Application::run() {
     selectionWindow.resize(400, 300);

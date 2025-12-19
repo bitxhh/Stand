@@ -46,6 +46,7 @@ add_executable(Stand
         LimeCore/LimeManager.h
         LimeCore/Device.cpp
         LimeCore/Device.h
+        resources.qrc
 )
 target_include_directories(Stand PRIVATE "${FFTW_INCLUDE_DIR}")
 
@@ -59,6 +60,7 @@ target_link_libraries(Stand
 
         LimeSuite.lib
         "${FFTW_LIB_DIR}/libfftw3-3.dll.a"
+        ${APP_RESOURCES}
 )
 
 add_custom_command(TARGET Stand POST_BUILD

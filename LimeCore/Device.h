@@ -24,11 +24,13 @@ public:
     void calibrate(double sampleRateHz);
     [[nodiscard]] bool is_initialized() const { return is_init; }
 
+    void stream();
+
 //Getters ------------
     [[nodiscard]] const std::string& GetSerial() const {return serial; };
     [[nodiscard]] const lms_info_str_t& GetInfo() const { return device_id; }
     static std::string GetDeviceSerial(const lms_info_str_t infoStr);
-    double get_sample_rate();
+    [[nodiscard]] double get_sample_rate() const;
     //------------------
 
     bool    is_init = false;
@@ -36,10 +38,24 @@ public:
     bool	isRunning = false;
 
 private:
+    void init_stream();
+    int error() const
+    {
+        if (device != nullptr)
+            LMS_Close(device);
+        exit(-10);
+    }
+
     lms_device_t* device = nullptr;
     lms_info_str_t device_id{};
     std::string serial;
     double currentSampleRate ={0.0};
+    lms_stream_t streamId;
+
+    //Initialize data buffers
+    const int sampleCnt = 5000; //complex samples per buffer
+    int16_t buffer[5000 * 2]; //buffer to hold complex values (2*samples)
+
 
     enum CalibrationStatus {
         Calibrated = 1,
