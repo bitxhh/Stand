@@ -38,14 +38,7 @@ public:
         30000000
     };
 
-    enum CalibrationStatus {
-        Calibrated = 1,
-        NotCalibrated = 0,
-        CalibrationErr = -1
-    };
-    uint16_t LNA = 10;
-    uint16_t TIA = 3;
-    uint16_t PGA = 12;
+
 
 private:
     static bool ids_equal(const lms_info_str_t& lhs, const lms_info_str_t& rhs);

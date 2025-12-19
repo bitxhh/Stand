@@ -44,10 +44,8 @@ public:
         QLabel* initStatusLabel{nullptr};
         QLabel* currentSampleRateLabel{nullptr};
         QComboBox* sampleRateSelector{nullptr};
-        QComboBox* rxChannelSelector{nullptr};
-        QComboBox* txChannelSelector{nullptr};
-        QComboBox* rxPathSelector{nullptr};
-        QComboBox* txPathSelector{nullptr};
+        QPushButton* calibrateButton{nullptr};
+
 
         QWidget* createDeviceInfoPage();
         QWidget* createDeviceControlPage();
@@ -55,8 +53,6 @@ public:
         void initializeDevice();
         void calibrateDevice();
         void applySampleRate();
-        void applyChannels();
-        void applyPaths();
         void handleConnectionCheckFinished();
 };
 
