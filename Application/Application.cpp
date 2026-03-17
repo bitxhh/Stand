@@ -27,14 +27,19 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManag
     auto* controlItem = new QListWidgetItem("Device control", functionList);
     controlItem->setSizeHint(QSize(0, 48));
 
+    auto* fftItem = new QListWidgetItem("FFT", functionList);
+    fftItem->setSizeHint(QSize(0, 48));
+
     contentStack = new QStackedWidget(central);
     auto* emptyPage = new QWidget(contentStack);
     contentStack->addWidget(emptyPage);
 
     deviceInfoPage = createDeviceInfoPage();
     deviceControlPage = createDeviceControlPage();
+    deviceFFTpage = createDeviceFFTpage();
     contentStack->addWidget(deviceInfoPage);
     contentStack->addWidget(deviceControlPage);
+    contentStack->addWidget(deviceFFTpage);
 
     connect(functionList, &QListWidget::itemClicked, this, [this, deviceInfoItem, controlItem](QListWidgetItem* item) {
         if (item == deviceInfoItem) {
@@ -143,6 +148,16 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addWidget(calibrateButton);
     layout->addWidget(streamButton);
     layout->addStretch();
+
+    return page;
+}
+
+QWidget *DeviceDetailWindow::createDeviceFFTpage() {
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* title = new QLabel("FFT", page);
+    title->setStyleSheet("font-weight: 600; font-size: 16px;");
 
     return page;
 }

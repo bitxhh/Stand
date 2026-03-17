@@ -39,6 +39,7 @@ public:
         QStackedWidget* contentStack{nullptr};
         QWidget* deviceInfoPage{nullptr};
         QWidget* deviceControlPage{nullptr};
+        QWidget* deviceFFTpage{nullptr};
         QTimer* connectionTimer{nullptr};
         QFutureWatcher<std::vector<std::shared_ptr<Device>>> connectionWatcher;
         QLabel* initStatusLabel{nullptr};
@@ -50,6 +51,7 @@ public:
 
         QWidget* createDeviceInfoPage();
         QWidget* createDeviceControlPage();
+        QWidget* createDeviceFFTpage();
         void refreshCurrentSampleRate() const;
         void initializeDevice();
         void calibrateDevice();
