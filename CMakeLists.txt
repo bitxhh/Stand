@@ -51,6 +51,8 @@ add_executable(Stand
         LimeCore/Device.h
         LimeCore/LimeManager.cpp
         LimeCore/LimeManager.h
+        LimeCore/StreamWorker.cpp
+        LimeCore/StreamWorker.h
 
         # New: exceptions + logging
         LimeCore/LimeException.h          # header-only, no .cpp needed

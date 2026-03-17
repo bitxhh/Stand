@@ -33,6 +33,8 @@ public:
     std::atomic<bool> isRunning{false};  // atomic — stream() и stopStream() из разных потоков
 
 private:
+    friend class StreamWorker;
+
     void init_stream();
 
     lms_device_t*  device = nullptr;
