@@ -1,14 +1,10 @@
-//
-// Created by ilya1 on 11.12.2025.
-//
 #pragma once
 #include "lime/LimeSuite.h"
+#include <atomic>
 #include <string>
-
 
 class Device {
 public:
-    //-------------------------------------------
     explicit Device(const lms_info_str_t& id);
 
     Device(const Device&) = delete;
@@ -18,49 +14,39 @@ public:
     Device& operator=(Device&& other) noexcept;
 
     ~Device();
-//------------------------------------------------
+
     void init_device();
     void set_sample_rate(double sampleRateHz);
     void calibrate(double sampleRateHz);
     [[nodiscard]] bool is_initialized() const { return is_init; }
 
     void stream();
+    void stopStream() { isRunning = false; }  // можно вызвать из любого потока
 
-//Getters ------------
-    [[nodiscard]] const std::string& GetSerial() const {return serial; };
-    [[nodiscard]] const lms_info_str_t& GetInfo() const { return device_id; }
+    [[nodiscard]] const std::string&    GetSerial() const { return serial; }
+    [[nodiscard]] const lms_info_str_t& GetInfo()   const { return device_id; }
+    [[nodiscard]] double                get_sample_rate() const;
     static std::string GetDeviceSerial(const lms_info_str_t infoStr);
-    [[nodiscard]] double get_sample_rate() const;
-    //------------------
 
-    bool    is_init = false;
-    int     isCalibrated = NotCalibrated;
-    bool	isRunning = false;
+    bool is_init      = false;
+    int  isCalibrated = NotCalibrated;
+    std::atomic<bool> isRunning{false};  // atomic — stream() и stopStream() из разных потоков
 
 private:
     void init_stream();
-    int error() const
-    {
-        if (device != nullptr)
-            LMS_Close(device);
-        exit(-10);
-    }
 
-    lms_device_t* device = nullptr;
+    lms_device_t*  device = nullptr;
     lms_info_str_t device_id{};
-    std::string serial;
-    double currentSampleRate ={0.0};
-    lms_stream_t streamId;
+    std::string    serial;
+    double         currentSampleRate = 0.0;
+    lms_stream_t   streamId{};
 
-    //Initialize data buffers
-    const int sampleCnt = 5000; //complex samples per buffer
-    int16_t buffer[5000 * 2]; //buffer to hold complex values (2*samples)
-
+    static constexpr int sampleCnt = 5000;
+    int16_t buffer[sampleCnt * 2]{};
 
     enum CalibrationStatus {
-        Calibrated = 1,
-        NotCalibrated = 0,
+        Calibrated     =  1,
+        NotCalibrated  =  0,
         CalibrationErr = -1
     };
-
 };

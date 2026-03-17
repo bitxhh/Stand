@@ -62,7 +62,7 @@ void Device::init_stream() {
 }
 
 // ---------------------------------------------------------------------------
-// Stream  (blocking — run in a worker thread, not on the UI thread)
+// Stream  (blocking — вызывать из отдельного потока, не из UI)
 // ---------------------------------------------------------------------------
 void Device::stream() {
     LOG_INFO("Starting RX stream: " + serial);
@@ -129,6 +129,8 @@ double Device::get_sample_rate() const {
 // ---------------------------------------------------------------------------
 // Calibration
 // ---------------------------------------------------------------------------
+
+
 void Device::calibrate(double sampleRateHz) {
     if (!is_init)
         throw LimeInitException("Cannot calibrate — device not initialized");
@@ -157,7 +159,7 @@ Device::Device(Device&& other) noexcept
     , currentSampleRate(other.currentSampleRate)
     , is_init(other.is_init)
     , isCalibrated(other.isCalibrated)
-    , isRunning(other.isRunning)
+    , isRunning(other.isRunning.load())
     , streamId(other.streamId)
 {
     std::memcpy(device_id, other.device_id, sizeof(lms_info_str_t));
@@ -177,7 +179,7 @@ Device& Device::operator=(Device&& other) noexcept {
         currentSampleRate = other.currentSampleRate;
         is_init           = other.is_init;
         isCalibrated      = other.isCalibrated;
-        isRunning         = other.isRunning;
+        isRunning         = other.isRunning.load();
         streamId          = other.streamId;
         std::memcpy(device_id, other.device_id, sizeof(lms_info_str_t));
 
