@@ -2,6 +2,7 @@
 #include "LimeException.h"
 #include "Logger.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -40,15 +41,31 @@ void Device::init_device() {
     if (LMS_SetSampleRate(device, 30'000'000, 2) != 0)
         throwLimeError("LMS_SetSampleRate failed");
 
-    init_stream();
+    // Set up the stream immediately so the streamId is valid.
+    // StreamWorker will call LMS_StartStream / LMS_StopStream per session.
+    // If the user changes SR later, StreamWorker calls teardown_stream() +
+    // setup_stream() before starting to refresh USB packet sizing.
+    setup_stream();
 
     is_init = true;
     LOG_INFO("Device initialized: " + serial);
 }
 
-void Device::init_stream() {
+void Device::setup_stream() {
+    if (streamReady_) {
+        LOG_WARN("setup_stream called while stream already exists — tearing down first");
+        teardown_stream();
+    }
+
     LOG_DEBUG("Setting up RX stream for: " + serial);
 
+    // LMS_Calibrate internally resets parts of the RF chain.
+    // Re-enable the channel here to guarantee it is active before SetupStream,
+    // regardless of what happened between init_device() and now.
+    if (LMS_EnableChannel(device, LMS_CH_RX, 0, true) != 0)
+        throwLimeError("LMS_EnableChannel (pre-stream) failed");
+
+    streamId                      = {};
     streamId.channel              = 0;
     streamId.fifoSize             = 1024 * 1024;
     streamId.throughputVsLatency  = 1.0f;
@@ -58,7 +75,17 @@ void Device::init_stream() {
     if (LMS_SetupStream(device, &streamId) != 0)
         throwLimeError("LMS_SetupStream failed");
 
+    streamReady_ = true;
     LOG_DEBUG("RX stream ready for: " + serial);
+}
+
+void Device::teardown_stream() {
+    if (!streamReady_) return;
+    LMS_StopStream(&streamId);
+    LMS_DestroyStream(device, &streamId);
+    streamId     = {};
+    streamReady_ = false;
+    LOG_DEBUG("RX stream torn down for: " + serial);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,11 +133,43 @@ void Device::set_sample_rate(double sampleRateHz) {
 
     LOG_INFO("Setting sample rate to " + std::to_string(sampleRateHz) + " Hz on " + serial);
 
-    if (LMS_SetSampleRate(device, sampleRateHz, 0) != 0)
+    // oversampling=2 matches init_device() and keeps the FPGA clock at a known
+    // multiple of the host SR. oversampling=0 (auto) can pick large values at
+    // low SRs that interfere with USB transfer sizing.
+    if (LMS_SetSampleRate(device, sampleRateHz, 2) != 0)
         throwLimeError("LMS_SetSampleRate failed");
 
     currentSampleRate = sampleRateHz;
     LOG_INFO("Sample rate set: " + std::to_string(sampleRateHz) + " Hz");
+}
+
+void Device::set_center_frequency(double freqHz) {
+    if (!is_init)
+        throw LimeInitException("Cannot set frequency — device not initialized");
+
+    if (freqHz <= 0.0)
+        throw LimeParameterException("Center frequency must be > 0, got " + std::to_string(freqHz));
+
+    LOG_INFO("Setting center frequency to " + std::to_string(freqHz) + " Hz on " + serial);
+
+    if (LMS_SetLOFrequency(device, LMS_CH_RX, 0, freqHz) != 0)
+        throwLimeError("LMS_SetLOFrequency failed");
+
+    LOG_INFO("Center frequency set: " + std::to_string(freqHz) + " Hz");
+}
+
+void Device::set_normalized_gain(double gain) {
+    if (!is_init)
+        throw LimeInitException("Cannot set gain — device not initialized");
+
+    gain = std::clamp(gain, 0.0, 1.0);
+
+    LOG_INFO("Setting normalized RX gain to " + std::to_string(gain) + " on " + serial);
+
+    if (LMS_SetNormalizedGain(device, LMS_CH_RX, 0, gain) != 0)
+        throwLimeError("LMS_SetNormalizedGain failed");
+
+    LOG_INFO("Normalized RX gain set: " + std::to_string(gain));
 }
 
 double Device::get_sample_rate() const {
@@ -129,15 +188,19 @@ double Device::get_sample_rate() const {
 // ---------------------------------------------------------------------------
 // Calibration
 // ---------------------------------------------------------------------------
-
-
 void Device::calibrate(double sampleRateHz) {
     if (!is_init)
         throw LimeInitException("Cannot calibrate — device not initialized");
 
-    LOG_INFO("Calibrating RX channel on " + serial + " at " + std::to_string(sampleRateHz) + " Hz");
+    // LimeSuite silently clamps calibration bandwidth to 2.5 MHz minimum.
+    // Pass at least 2.5 MHz to avoid the confusing "out of range" console message.
+    const double calBw = std::max(sampleRateHz, 2.5e6);
 
-    if (LMS_Calibrate(device, LMS_CH_RX, 0, sampleRateHz, 0) != 0)
+    LOG_INFO("Calibrating RX channel on " + serial
+             + " at " + std::to_string(calBw) + " Hz"
+             + (calBw > sampleRateHz ? " (clamped from " + std::to_string(sampleRateHz) + " Hz)" : ""));
+
+    if (LMS_Calibrate(device, LMS_CH_RX, 0, calBw, 0) != 0)
         throwLimeError("LMS_Calibrate failed");
 
     isCalibrated = Calibrated;
@@ -170,8 +233,10 @@ Device::Device(Device&& other) noexcept
 Device& Device::operator=(Device&& other) noexcept {
     if (this != &other) {
         if (device) {
-            LMS_StopStream(&streamId);
-            LMS_DestroyStream(device, &streamId);
+            if (streamReady_) {
+                LMS_StopStream(&streamId);
+                LMS_DestroyStream(device, &streamId);
+            }
             LMS_Close(device);
         }
         device            = other.device;
@@ -180,10 +245,12 @@ Device& Device::operator=(Device&& other) noexcept {
         is_init           = other.is_init;
         isCalibrated      = other.isCalibrated;
         isRunning         = other.isRunning.load();
+        streamReady_      = other.streamReady_;
         streamId          = other.streamId;
         std::memcpy(device_id, other.device_id, sizeof(lms_info_str_t));
 
-        other.device = nullptr;
+        other.device      = nullptr;
+        other.streamReady_= false;
         std::memset(other.device_id, 0, sizeof(lms_info_str_t));
     }
     return *this;
@@ -193,8 +260,10 @@ Device::~Device() {
     if (device != nullptr) {
         LOG_INFO("Closing device: " + serial);
         isRunning = false;
-        LMS_StopStream(&streamId);
-        LMS_DestroyStream(device, &streamId);
+        if (streamReady_) {
+            LMS_StopStream(&streamId);
+            LMS_DestroyStream(device, &streamId);
+        }
         LMS_Close(device);
         device = nullptr;
     }

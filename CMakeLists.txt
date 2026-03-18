@@ -53,8 +53,16 @@ add_executable(Stand
         LimeCore/LimeManager.h
         LimeCore/StreamWorker.cpp
         LimeCore/StreamWorker.h
+        FFTProcessor/FftProcessor.cpp
+        FFTProcessor/FftProcessor.h
 
-        # New: exceptions + logging
+        # Command layer
+        LimeCore/DeviceController.cpp
+        LimeCore/DeviceController.h
+        LimeCore/BandpassExporter.cpp
+        LimeCore/BandpassExporter.h
+
+        # Exceptions + logging
         LimeCore/LimeException.h          # header-only, no .cpp needed
         LimeCore/Logger.cpp
         LimeCore/Logger.h

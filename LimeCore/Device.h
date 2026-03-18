@@ -18,29 +18,38 @@ public:
     void init_device();
     void set_sample_rate(double sampleRateHz);
     void calibrate(double sampleRateHz);
+    void set_center_frequency(double freqHz);
+    void set_normalized_gain(double gain);
+
+    // Stream lifecycle — called by StreamWorker, not the UI.
+    // setup_stream() must be called after the final set_sample_rate()
+    // and before LMS_StartStream so USB transfer sizes match current SR.
+    void setup_stream();
+    void teardown_stream();
+
     [[nodiscard]] bool is_initialized() const { return is_init; }
 
     void stream();
-    void stopStream() { isRunning = false; }  // можно вызвать из любого потока
+    void stopStream() { isRunning = false; }
 
     [[nodiscard]] const std::string&    GetSerial() const { return serial; }
     [[nodiscard]] const lms_info_str_t& GetInfo()   const { return device_id; }
     [[nodiscard]] double                get_sample_rate() const;
+    [[nodiscard]] bool                  is_stream_ready() const { return streamReady_; }
     static std::string GetDeviceSerial(const lms_info_str_t infoStr);
 
     bool is_init      = false;
     int  isCalibrated = NotCalibrated;
-    std::atomic<bool> isRunning{false};  // atomic — stream() и stopStream() из разных потоков
+    std::atomic<bool> isRunning{false};
 
 private:
     friend class StreamWorker;
-
-    void init_stream();
 
     lms_device_t*  device = nullptr;
     lms_info_str_t device_id{};
     std::string    serial;
     double         currentSampleRate = 0.0;
+    bool           streamReady_      = false;
     lms_stream_t   streamId{};
 
     static constexpr int sampleCnt = 5000;
