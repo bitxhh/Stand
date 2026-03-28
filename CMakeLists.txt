@@ -52,6 +52,8 @@ add_executable(Stand
 
         Hardware/Device.cpp
         Hardware/Device.h
+        Hardware/LimeDevice.cpp
+        Hardware/LimeDevice.h
         Hardware/LimeManager.cpp
         Hardware/LimeManager.h
         Hardware/StreamWorker.cpp

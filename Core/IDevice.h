@@ -33,6 +33,7 @@ class IDevice : public QObject {
     Q_OBJECT
 
 public:
+    explicit IDevice(QObject* parent = nullptr) : QObject(parent) {}
     ~IDevice() override = default;
 
     // ── Идентификация ─────────────────────────────────────────────────────────

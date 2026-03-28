@@ -1,7 +1,7 @@
 #pragma once
 
 #include <QList>
-<parameter name="content">#include <QObject>
+#include <QObject>
 #include <memory>
 
 #include "IDevice.h"
@@ -10,9 +10,9 @@
 // IDeviceManager — SDR-агностичный интерфейс менеджера устройств.
 //
 // Отвечает за:
-//   • Обнаружение подключённых устройств (refresh).
-//   • Хранение списка активных IDevice.
-//   • Уведомление подписчиков при изменении списка (devicesChanged).
+//   * Обнаружение подключённых устройств (refresh).
+//   * Хранение списка активных IDevice.
+//   * Уведомление подписчиков при изменении списка (devicesChanged).
 //
 // Реализации: LimeDeviceManager (LimeSuite), RtlDeviceManager (rtl-sdr), ...
 // ---------------------------------------------------------------------------
@@ -20,6 +20,7 @@ class IDeviceManager : public QObject {
     Q_OBJECT
 
 public:
+    explicit IDeviceManager(QObject* parent = nullptr) : QObject(parent) {}
     ~IDeviceManager() override = default;
 
     // Обновить список устройств. Добавляет новые, удаляет исчезнувшие.
