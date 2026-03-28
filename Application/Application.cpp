@@ -12,13 +12,13 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // DeviceDetailWindow — constructor
 // ═══════════════════════════════════════════════════════════════════════════════
-DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManager& manager, QWidget* parent)
+DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceManager& manager, QWidget* parent)
     : QMainWindow(parent)
     , device(std::move(device))
     , manager(manager)
     , controller_(new DeviceController(this->device, this))
 {
-    setWindowTitle(QString::fromStdString(this->device->GetSerial()));
+    setWindowTitle(this->device->id());
 
     connect(controller_, &DeviceController::deviceInitialized,
             this,        &DeviceDetailWindow::onDeviceInitialized);
@@ -77,14 +77,14 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<Device> device, LimeManag
     connectionTimer->setInterval(1000);
     connect(connectionTimer, &QTimer::timeout, this, &DeviceDetailWindow::checkDeviceConnection);
     connect(&connectionWatcher,
-            &QFutureWatcher<std::vector<std::shared_ptr<Device>>>::finished,
+            &QFutureWatcher<QList<std::shared_ptr<IDevice>>>::finished,
             this, &DeviceDetailWindow::handleConnectionCheckFinished);
     connectionTimer->start();
     checkDeviceConnection();
 }
 
 DeviceDetailWindow::~DeviceDetailWindow() {
-    teardownStream();   // also calls fmAudio_->teardown() internally
+    teardownStream();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -98,9 +98,9 @@ QWidget* DeviceDetailWindow::createDeviceInfoPage() {
     title->setStyleSheet("font-weight: 600; font-size: 16px;");
 
     auto* serialLabel = new QLabel(
-        QString("Serial: %1").arg(QString::fromStdString(this->device->GetSerial())), page);
+        QString("Serial: %1").arg(device->id()), page);
     auto* detailLabel = new QLabel(
-        QString("Info: %1").arg(QString::fromStdString(std::string(this->device->GetInfo()))), page);
+        QString("Info: %1").arg(device->name()), page);
     detailLabel->setWordWrap(true);
 
     currentSampleRateLabel = new QLabel(page);
@@ -128,13 +128,13 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     controlStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
 
     sampleRateSelector = new QComboBox(page);
-    for (double rate : manager.sampleRates)
+    for (double rate : device->supportedSampleRates())
         sampleRateSelector->addItem(QString("%1 Hz").arg(rate, 0, 'f', 0), rate);
 
     auto* initButton = new QPushButton("Initialize device", page);
     calibrateButton  = new QPushButton("Calibrate",         page);
 
-    const bool ready = device->is_initialized();
+    const bool ready = controller_->isInitialized();
     sampleRateSelector->setEnabled(ready);
     calibrateButton->setEnabled(ready);
 
@@ -302,6 +302,7 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         if (!controller_->isInitialized()) return;
         const double mhz = freqSpinBox->value();
         controller_->setFrequency(mhz);
+        if (fftHandler_) fftHandler_->setCenterFrequency(mhz);
         if (centerLine_) {
             centerLine_->start->setCoords(mhz, -130.0);
             centerLine_->end->setCoords  (mhz,   10.0);
@@ -454,10 +455,10 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         if (fmAudio_) fmAudio_->setVolume(static_cast<float>(v) / 100.0f);
     });
 
-    // BW change → update filter band on spectrum + FmDemodulator on the fly
-    connect(fmBwSpin_, &QDoubleSpinBox::valueChanged, this, [this](double /*bwKHz*/) {
+    // BW change → update filter band on spectrum + FmDemodHandler on the fly
+    connect(fmBwSpin_, &QDoubleSpinBox::valueChanged, this, [this](double bwKHz) {
         updateFilterBand(fmCheckBox->isChecked());
-        if (streamWorker) streamWorker->setFmBandwidth(fmBwSpin_->value() * 1000.0);
+        if (fmDemodHandler_) fmDemodHandler_->setBandwidth(bwKHz * 1000.0);
     });
 
     // When LO changes → filter band follows it automatically
@@ -480,8 +481,6 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
 
     // ── FM status + second row with Apply button ──────────────────────────────
     // Apply allows reconfiguring FM while stream is already running.
-    // It stops the current FmDemodulator (via streamWorker->disableFmDemod /
-    // enableFmDemod) and restarts the audio sink with new parameters.
     // If stream is not running, Apply is a no-op — settings are picked up at Start.
     auto* fmRow2  = new QWidget(page);
     auto* fmHlay2 = new QHBoxLayout(fmRow2);
@@ -496,9 +495,14 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
 
     connect(applyFmButton_, &QPushButton::clicked, this, [this]() {
         if (!fmCheckBox->isChecked()) {
+            // Disable FM: remove handler from pipeline, teardown audio
+            if (pipeline_ && fmDemodHandler_) {
+                pipeline_->removeHandler(fmDemodHandler_);
+                delete fmDemodHandler_;
+                fmDemodHandler_ = nullptr;
+            }
             if (fmAudio_) fmAudio_->teardown();
-            if (streamWorker) streamWorker->disableFmDemod();
-            fmStatusLabel->setText("");
+            if (fmStatusLabel) fmStatusLabel->setText("");
             updateFilterBand(false);
             return;
         }
@@ -528,13 +532,19 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         fmStatusLabel->setText("FM: waiting for first audio block…");
         updateFilterBand(true);
 
-        if (streamWorker) {
-            streamWorker->disableFmDemod();
-            streamWorker->enableFmDemod(0.0, tau, bwHz);
-
-            connect(streamWorker, &StreamWorker::audioReady,
-                    fmAudio_,     &FmAudioOutput::push,
+        if (pipeline_) {
+            // Remove existing FM handler if present
+            if (fmDemodHandler_) {
+                pipeline_->removeHandler(fmDemodHandler_);
+                delete fmDemodHandler_;
+                fmDemodHandler_ = nullptr;
+            }
+            // Create new handler with updated parameters
+            fmDemodHandler_ = new FmDemodHandler(0.0, tau, bwHz, this);
+            connect(fmDemodHandler_, &FmDemodHandler::audioReady,
+                    fmAudio_,        &FmAudioOutput::push,
                     Qt::QueuedConnection);
+            pipeline_->addHandler(fmDemodHandler_);
 
             fmStatusLabel->setText("FM: reconfigured, waiting for audio…");
         }
@@ -560,7 +570,7 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     streamStartButton = new QPushButton("▶  Start", btnRow);
     streamStopButton  = new QPushButton("■  Stop",  btnRow);
     streamStopButton->setEnabled(false);
-    streamStartButton->setEnabled(device->is_initialized());
+    streamStartButton->setEnabled(controller_->isInitialized());
 
     connect(streamStartButton, &QPushButton::clicked, this, &DeviceDetailWindow::startStream);
     connect(streamStopButton,  &QPushButton::clicked, this, &DeviceDetailWindow::stopStream);
@@ -721,42 +731,60 @@ void DeviceDetailWindow::onControllerError(const QString& message) {
 void DeviceDetailWindow::startStream() {
     if (streamWorker) return;
 
-    // Always log the full configuration snapshot so stand.log shows exactly
-    // what was active at stream start — makes silent misconfiguration visible.
     LOG_INFO("startStream: record=" + std::to_string(recordCheckBox->isChecked())
              + " wav=" + std::to_string(wavCheckBox->isChecked())
              + " fm=" + std::to_string(fmCheckBox->isChecked())
              + " lo=" + std::to_string(freqSpinBox->value()) + " MHz");
 
-    streamThread = new QThread(this);
-    streamWorker = new StreamWorker(device);
-    streamWorker->moveToThread(streamThread);
+    // ── Build pipeline ────────────────────────────────────────────────────────
+    pipeline_ = new Pipeline(this);
 
-    if (recordCheckBox->isChecked())
-        streamWorker->enableFileOutput(recordPathEdit->text());
+    // FFT handler — always active
+    fftHandler_ = new FftHandler(this);
+    fftHandler_->setCenterFrequency(freqSpinBox->value());
+    pipeline_->addHandler(fftHandler_);
 
+    connect(fftHandler_, &FftHandler::fftReady,
+            this,        &DeviceDetailWindow::onFftReady,
+            Qt::QueuedConnection);
+
+    // Raw .raw recording
+    if (recordCheckBox->isChecked()) {
+        auto* rawHandler = new RawFileHandler(recordPathEdit->text());
+        pipeline_->addHandler(rawHandler);
+        // Ownership: pipeline dispatches but doesn't own; store ptr in a list for cleanup
+        // For simplicity, wrap in QObject-managed via deleteLater on stream stop
+        // (handler will be cleaned in teardownStream via pipeline_->clearHandlers + delete)
+        rawHandlers_.push_back(rawHandler);
+    }
+
+    // Bandpass WAV export
     if (wavCheckBox->isChecked()) {
-        streamWorker->enableBandpassWav(
+        auto* wavHandler = new BandpassHandler(
             wavPathEdit->text(),
             wavOffsetSpin->value(),
             wavBwSpin->value());
+        pipeline_->addHandler(wavHandler);
+        wavHandlers_.push_back(wavHandler);
     }
 
+    // FM demodulation
     if (fmCheckBox->isChecked()) {
-        // Offset is always 0 — LO is tuned to the station directly
         const double tau  = fmDeemphCombo->currentData().toDouble();
         const double bwHz = fmBwSpin_->value() * 1000.0;
-        streamWorker->enableFmDemod(0.0, tau, bwHz);
 
         LOG_INFO("FM demod: LO=" + std::to_string(freqSpinBox->value())
                  + " MHz  offset=0  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
+
+        fmDemodHandler_ = new FmDemodHandler(0.0, tau, bwHz, this);
+        pipeline_->addHandler(fmDemodHandler_);
 
         delete fmAudio_;
         fmAudio_ = new FmAudioOutput(this);
         fmAudio_->setVolume(static_cast<float>(fmVolumeSlider->value()) / 100.0f);
 
-        connect(streamWorker, &StreamWorker::audioReady,
-                fmAudio_,     &FmAudioOutput::push,
+        connect(fmDemodHandler_, &FmDemodHandler::audioReady,
+                fmAudio_,        &FmAudioOutput::push,
                 Qt::QueuedConnection);
 
         connect(fmAudio_, &FmAudioOutput::statusChanged, this,
@@ -773,8 +801,12 @@ void DeviceDetailWindow::startStream() {
         fmStatusLabel->setText("FM: waiting for first audio block…");
     }
 
+    // ── Start worker thread ───────────────────────────────────────────────────
+    streamThread = new QThread(this);
+    streamWorker = new StreamWorker(device.get(), pipeline_);
+    streamWorker->moveToThread(streamThread);
+
     connect(streamThread, &QThread::started,            streamWorker, &StreamWorker::run);
-    connect(streamWorker, &StreamWorker::samplesReady,  this,         &DeviceDetailWindow::onSamplesReady,   Qt::QueuedConnection);
     connect(streamWorker, &StreamWorker::statusMessage, streamStatusLabel, &QLabel::setText,                 Qt::QueuedConnection);
     connect(streamWorker, &StreamWorker::errorOccurred, this,         &DeviceDetailWindow::onStreamError,    Qt::QueuedConnection);
     connect(streamWorker, &StreamWorker::finished,      this,         &DeviceDetailWindow::onStreamFinished, Qt::QueuedConnection);
@@ -800,6 +832,21 @@ void DeviceDetailWindow::teardownStream() {
     if (streamThread) { streamThread->quit(); streamThread->wait(3000); }
     streamWorker = nullptr;
     streamThread = nullptr;
+
+    if (pipeline_) {
+        pipeline_->clearHandlers();
+        delete pipeline_;
+        pipeline_ = nullptr;
+    }
+
+    delete fftHandler_;      fftHandler_     = nullptr;
+    delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
+
+    for (auto* h : rawHandlers_) delete h;
+    rawHandlers_.clear();
+    for (auto* h : wavHandlers_) delete h;
+    wavHandlers_.clear();
+
     if (fmAudio_) fmAudio_->teardown();
 }
 
@@ -807,24 +854,16 @@ void DeviceDetailWindow::teardownStream() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // FFT / stream slots
 // ═══════════════════════════════════════════════════════════════════════════════
-void DeviceDetailWindow::onSamplesReady(QVector<int16_t> samples) {
-    try {
-        const auto frame = FftProcessor::process(
-            samples,
-            freqSpinBox->value(),
-            device->get_sample_rate());
-        fftPlot->graph(0)->setData(frame.freqMHz, frame.powerDb);
+void DeviceDetailWindow::onFftReady(FftFrame frame) {
+    fftPlot->graph(0)->setData(frame.freqMHz, frame.powerDb);
 
-        if (centerLine_) {
-            const double mhz = freqSpinBox->value();
-            centerLine_->start->setCoords(mhz, -130.0);
-            centerLine_->end->setCoords  (mhz,   10.0);
-        }
-        fftPlot->xAxis->rescale();
-        fftPlot->replot(QCustomPlot::rpQueuedReplot);
-    } catch (const std::exception& ex) {
-        onStreamError(QString("FFT error: %1").arg(ex.what()));
+    if (centerLine_) {
+        const double mhz = freqSpinBox->value();
+        centerLine_->start->setCoords(mhz, -130.0);
+        centerLine_->end->setCoords  (mhz,   10.0);
     }
+    fftPlot->xAxis->rescale();
+    fftPlot->replot(QCustomPlot::rpQueuedReplot);
 }
 
 void DeviceDetailWindow::onStreamError(const QString& error) {
@@ -834,9 +873,25 @@ void DeviceDetailWindow::onStreamError(const QString& error) {
 }
 
 void DeviceDetailWindow::onStreamFinished() {
+    // streamWorker/streamThread are deleted via deleteLater connected to QThread::finished
     streamWorker = nullptr;
     streamThread = nullptr;
-    streamStartButton->setEnabled(device->is_initialized());
+
+    if (pipeline_) {
+        pipeline_->clearHandlers();
+        delete pipeline_;
+        pipeline_ = nullptr;
+    }
+
+    delete fftHandler_;      fftHandler_     = nullptr;
+    delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
+
+    for (auto* h : rawHandlers_) delete h;
+    rawHandlers_.clear();
+    for (auto* h : wavHandlers_) delete h;
+    wavHandlers_.clear();
+
+    streamStartButton->setEnabled(controller_->isInitialized());
     streamStopButton->setEnabled(false);
     streamStatusLabel->setStyleSheet("color: gray;");
     streamStatusLabel->setText("Idle");
@@ -863,12 +918,12 @@ void DeviceDetailWindow::onFreqSpinChanged(double value) {
 // ═══════════════════════════════════════════════════════════════════════════════
 void DeviceDetailWindow::refreshCurrentSampleRate() const {
     if (!currentSampleRateLabel) return;
-    if (!device->is_initialized()) {
+    if (device->state() < DeviceState::Ready) {
         currentSampleRateLabel->setText("Current sample rate: device not initialized");
         return;
     }
     try {
-        const double sr = device->get_sample_rate();
+        const double sr = device->sampleRate();
         currentSampleRateLabel->setText(
             QString("Current sample rate: %1 Hz").arg(sr, 0, 'f', 0));
         if (sampleRateSelector) {
@@ -891,16 +946,17 @@ void DeviceDetailWindow::refreshCurrentSampleRate() const {
 void DeviceDetailWindow::checkDeviceConnection() {
     if (connectionWatcher.isRunning()) return;
     connectionWatcher.setFuture(QtConcurrent::run([this]() {
-        manager.refresh_devices();
-        return manager.get_devices();
+        manager.refresh();
+        return manager.devices();
     }));
 }
 
 void DeviceDetailWindow::handleConnectionCheckFinished() {
     const auto devices   = connectionWatcher.result();
-    const bool connected = std::ranges::any_of(devices, [&](const std::shared_ptr<Device>& d) {
-        return d->GetSerial() == device->GetSerial();
-    });
+    const bool connected = std::ranges::any_of(devices,
+        [&](const std::shared_ptr<IDevice>& d) {
+            return d->id() == device->id();
+        });
     if (!connected) {
         connectionTimer->stop();
         teardownStream();
@@ -911,13 +967,13 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // DeviceSelectionWindow
 // ═══════════════════════════════════════════════════════════════════════════════
-DeviceSelectionWindow::DeviceSelectionWindow(LimeManager& manager, QWidget* parent)
+DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager, QWidget* parent)
     : QWidget(parent)
     , manager(manager)
 {
-    setWindowTitle("LimeManager");
+    setWindowTitle("Stand — SDR");
     auto* layout = new QVBoxLayout(this);
-    statusLabel  = new QLabel("Searching for LimeSDR devices...", this);
+    statusLabel  = new QLabel("Searching for SDR devices...", this);
     deviceList   = new QListWidget(this);
     layout->addWidget(statusLabel);
     layout->addWidget(deviceList);
@@ -927,7 +983,7 @@ DeviceSelectionWindow::DeviceSelectionWindow(LimeManager& manager, QWidget* pare
     connect(refreshTimer, &QTimer::timeout, this, &DeviceSelectionWindow::refreshDevices);
 
     connect(&refreshWatcher,
-            &QFutureWatcher<std::vector<std::shared_ptr<Device>>>::finished,
+            &QFutureWatcher<QList<std::shared_ptr<IDevice>>>::finished,
             this, [this]() {
         deviceList->clear();
         const auto devices = refreshWatcher.result();
@@ -939,8 +995,7 @@ DeviceSelectionWindow::DeviceSelectionWindow(LimeManager& manager, QWidget* pare
         for (const auto& dev : devices) {
             auto* item = new QListWidgetItem(deviceList);
             item->setSizeHint(QSize(0, 40));
-            auto* btn = new QPushButton(
-                QString::fromStdString(dev->GetSerial()), deviceList);
+            auto* btn = new QPushButton(dev->name(), deviceList);
             connect(btn, &QPushButton::clicked, this, [this, dev]() { openDevice(dev); });
             deviceList->setItemWidget(item, btn);
         }
@@ -953,12 +1008,12 @@ DeviceSelectionWindow::DeviceSelectionWindow(LimeManager& manager, QWidget* pare
 void DeviceSelectionWindow::refreshDevices() {
     if (refreshWatcher.isRunning()) return;
     refreshWatcher.setFuture(QtConcurrent::run([this]() {
-        manager.refresh_devices();
-        return manager.get_devices();
+        manager.refresh();
+        return manager.devices();
     }));
 }
 
-void DeviceSelectionWindow::openDevice(const std::shared_ptr<Device>& dev) {
+void DeviceSelectionWindow::openDevice(const std::shared_ptr<IDevice>& dev) {
     refreshTimer->stop();
     auto* window = new DeviceDetailWindow(dev, manager);
     window->setAttribute(Qt::WA_DeleteOnClose);
@@ -976,7 +1031,7 @@ void DeviceSelectionWindow::openDevice(const std::shared_ptr<Device>& dev) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Application
 // ═══════════════════════════════════════════════════════════════════════════════
-Application::Application(int& argc, char** argv, LimeManager& manager)
+Application::Application(int& argc, char** argv, IDeviceManager& manager)
     : qtApp(argc, argv)
     , selectionWindow(manager)
 {

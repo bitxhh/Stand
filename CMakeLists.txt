@@ -65,10 +65,18 @@ add_executable(Stand
 
         DSP/FftProcessor.cpp
         DSP/FftProcessor.h
+        DSP/FftHandler.cpp
+        DSP/FftHandler.h
         DSP/BandpassExporter.cpp
         DSP/BandpassExporter.h
+        DSP/BandpassHandler.cpp
+        DSP/BandpassHandler.h
         DSP/FmDemodulator.cpp
         DSP/FmDemodulator.h
+        DSP/FmDemodHandler.cpp
+        DSP/FmDemodHandler.h
+        DSP/RawFileHandler.cpp
+        DSP/RawFileHandler.h
 
         Audio/FmAudioOutput.cpp
         Audio/FmAudioOutput.h
@@ -76,6 +84,8 @@ add_executable(Stand
         Core/IDevice.h
         Core/IDeviceManager.h
         Core/IPipelineHandler.h
+        Core/Pipeline.cpp
+        Core/Pipeline.h
         Core/LimeException.h
         Core/Logger.cpp
         Core/Logger.h

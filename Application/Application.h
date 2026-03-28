@@ -24,13 +24,17 @@
 
 #include <memory>
 
-#include "../Hardware/LimeManager.h"
+#include "../Core/IDeviceManager.h"
+#include "../Core/Pipeline.h"
 #include "../Hardware/StreamWorker.h"
 #include "../Hardware/DeviceController.h"
-#include "../DSP/BandpassExporter.h"
-#include "../DSP/FmDemodulator.h"
-#include "../DSP/FftProcessor.h"
+#include "../DSP/FftHandler.h"
+#include "../DSP/FmDemodHandler.h"
+#include "../DSP/RawFileHandler.h"
+#include "../DSP/BandpassHandler.h"
 #include "../Audio/FmAudioOutput.h"
+
+#include <vector>
 
 class QCustomPlot;
 class QCPItemLine;
@@ -39,7 +43,7 @@ class QCPItemRect;
 class DeviceDetailWindow : public QMainWindow {
     Q_OBJECT
 public:
-    DeviceDetailWindow(std::shared_ptr<Device> device, LimeManager& manager, QWidget* parent = nullptr);
+    DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceManager& manager, QWidget* parent = nullptr);
     ~DeviceDetailWindow() override;
 
 signals:
@@ -59,16 +63,16 @@ private slots:
     // ── FFT / stream ──────────────────────────────────────────────────────────
     void startStream();
     void stopStream();
-    void onSamplesReady(QVector<int16_t> samples);
+    void onFftReady(FftFrame frame);
     void onStreamError(const QString& error);
     void onStreamFinished();
     void onFreqSliderChanged(int value);
     void onFreqSpinChanged(double value);
 
 private:
-    std::shared_ptr<Device> device;
-    LimeManager&            manager;
-    DeviceController*       controller_{nullptr};
+    std::shared_ptr<IDevice> device;
+    IDeviceManager&          manager;
+    DeviceController*        controller_{nullptr};
 
     // ── Navigation ────────────────────────────────────────────────────────────
     QListWidget*    functionList{nullptr};
@@ -78,8 +82,8 @@ private:
     QWidget*        deviceFFTpage{nullptr};
 
     // ── Connection watchdog ───────────────────────────────────────────────────
-    QTimer*                                              connectionTimer{nullptr};
-    QFutureWatcher<std::vector<std::shared_ptr<Device>>> connectionWatcher;
+    QTimer*                                           connectionTimer{nullptr};
+    QFutureWatcher<QList<std::shared_ptr<IDevice>>>   connectionWatcher;
 
     // ── Device Info page ──────────────────────────────────────────────────────
     QLabel* currentSampleRateLabel{nullptr};
@@ -90,7 +94,7 @@ private:
     QComboBox*   sampleRateSelector{nullptr};
     QPushButton* calibrateButton{nullptr};
     QSlider*     lnaSlider{nullptr};
-    QComboBox*   tiaCombo_{nullptr};   // TIA: 3 states → combobox more usable than slider
+    QComboBox*   tiaCombo_{nullptr};
     QSlider*     pgaSlider{nullptr};
     QLabel*      lnaValueLabel{nullptr};
     QLabel*      pgaValueLabel{nullptr};
@@ -116,7 +120,7 @@ private:
 
     // ── FM Radio ──────────────────────────────────────────────────────────────
     QCheckBox*      fmCheckBox{nullptr};
-    QDoubleSpinBox* fmBwSpin_{nullptr};      // filter bandwidth (kHz)
+    QDoubleSpinBox* fmBwSpin_{nullptr};
     QComboBox*      fmDeemphCombo{nullptr};
     QSlider*        fmVolumeSlider{nullptr};
     QLabel*         fmVolumeLabel{nullptr};
@@ -127,12 +131,18 @@ private:
     FmAudioOutput*  fmAudio_{nullptr};
 
     // ── Spectrum filter band ──────────────────────────────────────────────────
-    // Semi-transparent green rect ±BW/2 around LO, shown when FM is active.
     QCPItemRect*    vfoBand_{nullptr};
 
-    // ── Streaming ─────────────────────────────────────────────────────────────
-    QThread*      streamThread{nullptr};
-    StreamWorker* streamWorker{nullptr};
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+    QThread*        streamThread{nullptr};
+    StreamWorker*   streamWorker{nullptr};
+    Pipeline*       pipeline_{nullptr};
+    FftHandler*     fftHandler_{nullptr};
+    FmDemodHandler* fmDemodHandler_{nullptr};
+
+    // Non-QObject handlers — owned by DeviceDetailWindow, deleted in teardownStream
+    std::vector<RawFileHandler*>     rawHandlers_;
+    std::vector<BandpassHandler*>    wavHandlers_;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();
@@ -141,7 +151,7 @@ private:
     void     refreshCurrentSampleRate() const;
     void     setupFftPlot();
     void     teardownStream();
-    void     updateFilterBand(bool visible);  // show/hide ±BW band around LO
+    void     updateFilterBand(bool visible);
 
     static constexpr double kFreqMinMHz     =   30.0;
     static constexpr double kFreqMaxMHz     = 3800.0;
@@ -152,24 +162,24 @@ private:
 class DeviceSelectionWindow : public QWidget {
     Q_OBJECT
 public:
-    explicit DeviceSelectionWindow(LimeManager& manager, QWidget* parent = nullptr);
+    explicit DeviceSelectionWindow(IDeviceManager& manager, QWidget* parent = nullptr);
 
 private slots:
     void refreshDevices();
-    void openDevice(const std::shared_ptr<Device>& device);
+    void openDevice(const std::shared_ptr<IDevice>& device);
 
 private:
     QLabel*      statusLabel{nullptr};
     QListWidget* deviceList{nullptr};
     QTimer*      refreshTimer{nullptr};
-    QFutureWatcher<std::vector<std::shared_ptr<Device>>> refreshWatcher;
-    LimeManager& manager;
+    QFutureWatcher<QList<std::shared_ptr<IDevice>>> refreshWatcher;
+    IDeviceManager& manager;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 class Application {
 public:
-    Application(int& argc, char** argv, LimeManager& manager);
+    Application(int& argc, char** argv, IDeviceManager& manager);
     int run();
 
 private:

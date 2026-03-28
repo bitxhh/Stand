@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMetaType>
 #include <QVector>
 #include <cstdint>
 #include <memory>
@@ -8,6 +9,7 @@ struct FftFrame {
     QVector<double> freqMHz;
     QVector<double> powerDb;
 };
+Q_DECLARE_METATYPE(FftFrame)
 
 // ---------------------------------------------------------------------------
 // FftProcessor — stateless public API, stateful plan cache underneath.
