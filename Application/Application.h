@@ -24,14 +24,17 @@
 
 #include <memory>
 
-#include "../LimeCore/LimeManager.h"
-#include "../LimeCore/StreamWorker.h"
-#include "../LimeCore/DeviceController.h"
-#include "../LimeCore/BandpassExporter.h"
-#include "../FFTProcessor/FftProcessor.h"
+#include "../Hardware/LimeManager.h"
+#include "../Hardware/StreamWorker.h"
+#include "../Hardware/DeviceController.h"
+#include "../DSP/BandpassExporter.h"
+#include "../DSP/FmDemodulator.h"
+#include "../DSP/FftProcessor.h"
+#include "../Audio/FmAudioOutput.h"
 
 class QCustomPlot;
 class QCPItemLine;
+class QCPItemRect;
 
 class DeviceDetailWindow : public QMainWindow {
     Q_OBJECT
@@ -65,7 +68,7 @@ private slots:
 private:
     std::shared_ptr<Device> device;
     LimeManager&            manager;
-    DeviceController*       controller_{nullptr};   // ← new
+    DeviceController*       controller_{nullptr};
 
     // ── Navigation ────────────────────────────────────────────────────────────
     QListWidget*    functionList{nullptr};
@@ -83,32 +86,49 @@ private:
 
     // ── Device Control page ───────────────────────────────────────────────────
     QLabel*      initStatusLabel{nullptr};
-    QLabel*      controlStatusLabel{nullptr};   // ← replaces per-call QMessageBox feedback
+    QLabel*      controlStatusLabel{nullptr};
     QComboBox*   sampleRateSelector{nullptr};
     QPushButton* calibrateButton{nullptr};
     QSlider*     lnaSlider{nullptr};
-    QSlider*     tiaSlider{nullptr};
+    QComboBox*   tiaCombo_{nullptr};   // TIA: 3 states → combobox more usable than slider
     QSlider*     pgaSlider{nullptr};
     QLabel*      lnaValueLabel{nullptr};
-    QLabel*      tiaValueLabel{nullptr};
     QLabel*      pgaValueLabel{nullptr};
 
     // ── FFT page ──────────────────────────────────────────────────────────────
     QCustomPlot*    fftPlot{nullptr};
-    QCPItemLine*    centerLine_{nullptr};   // red vertical line at LO centre
+    QCPItemLine*    centerLine_{nullptr};
     QPushButton*    streamStartButton{nullptr};
     QPushButton*    streamStopButton{nullptr};
     QLabel*         streamStatusLabel{nullptr};
     QDoubleSpinBox* freqSpinBox{nullptr};
     QSlider*        freqSlider{nullptr};
-    QCheckBox*      recordCheckBox{nullptr};
-    QLineEdit*      recordPathEdit{nullptr};
+
+    // Raw .raw recording
+    QCheckBox*  recordCheckBox{nullptr};
+    QLineEdit*  recordPathEdit{nullptr};
 
     // Bandpass WAV export
     QCheckBox*      wavCheckBox{nullptr};
     QDoubleSpinBox* wavOffsetSpin{nullptr};
     QDoubleSpinBox* wavBwSpin{nullptr};
     QLineEdit*      wavPathEdit{nullptr};
+
+    // ── FM Radio ──────────────────────────────────────────────────────────────
+    QCheckBox*      fmCheckBox{nullptr};
+    QDoubleSpinBox* fmBwSpin_{nullptr};      // filter bandwidth (kHz)
+    QComboBox*      fmDeemphCombo{nullptr};
+    QSlider*        fmVolumeSlider{nullptr};
+    QLabel*         fmVolumeLabel{nullptr};
+    QLabel*         fmStatusLabel{nullptr};
+    QLabel*         fmLevelLabel_{nullptr};
+    QPushButton*    applyFmButton_{nullptr};
+
+    FmAudioOutput*  fmAudio_{nullptr};
+
+    // ── Spectrum filter band ──────────────────────────────────────────────────
+    // Semi-transparent green rect ±BW/2 around LO, shown when FM is active.
+    QCPItemRect*    vfoBand_{nullptr};
 
     // ── Streaming ─────────────────────────────────────────────────────────────
     QThread*      streamThread{nullptr};
@@ -121,6 +141,7 @@ private:
     void     refreshCurrentSampleRate() const;
     void     setupFftPlot();
     void     teardownStream();
+    void     updateFilterBand(bool visible);  // show/hide ±BW band around LO
 
     static constexpr double kFreqMinMHz     =   30.0;
     static constexpr double kFreqMaxMHz     = 3800.0;
