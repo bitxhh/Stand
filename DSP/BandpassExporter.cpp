@@ -41,7 +41,7 @@ BandpassExporter::BandpassExporter(double inputSampleRateHz,
     // after decimation.
     const double cutoff = std::min(bandwidth_,
                                    outputSR_ / 2.0 * 0.9);
-    const double cutoffNorm = cutoff / (inputSR_ / 2.0);
+    const double cutoffNorm = cutoff / inputSR_;   // fc/fs ∈ [0, 0.5]
     firCoeffs_    = designLowpassFir(kFirTaps, cutoffNorm);
     firDelayLine_.assign(kFirTaps, {0.0, 0.0});
 

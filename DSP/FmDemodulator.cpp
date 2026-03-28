@@ -53,7 +53,7 @@ FmDemodulator::FmDemodulator(double inputSampleRateHz,
 
     // ── Stage-2 FIR: real lowpass ─────────────────────────────────────────────
     const double cutoff2 = std::min(15'000.0, audioSR_ / 2.0 * 0.9);
-    fir2Coeffs_ = designLowpassFir(kFir2Taps, cutoff2 / (ifSR_ / 2.0));
+    fir2Coeffs_ = designLowpassFir(kFir2Taps, cutoff2 / ifSR_);  // fc/fs ∈ [0, 0.5]
     fir2Delay_.assign(kFir2Taps, 0.0);
 
     // ── NCO ──────────────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ void FmDemodulator::setBandwidth(double bandwidthHz) {
     // Clamp: ≥ 50 kHz (minimum for WBFM mono), ≤ ifSR/2 * 0.9 (anti-alias guard)
     bandwidth_ = std::clamp(bandwidthHz, 50'000.0, ifSR_ / 2.0 * 0.9);
 
-    const double cutoffNorm = bandwidth_ / (inputSR_ / 2.0);
+    const double cutoffNorm = bandwidth_ / inputSR_;   // fc/fs ∈ [0, 0.5]
     fir1Coeffs_ = designLowpassFir(kFir1Taps, cutoffNorm);
     // Clear delay line so the filter starts fresh without history artefacts
     std::fill(fir1Delay_.begin(), fir1Delay_.end(), std::complex<double>{0.0, 0.0});

@@ -816,6 +816,13 @@ void DeviceDetailWindow::startStream() {
 
     streamThread->start();
 
+    // Start metrics refresh (500 ms interval)
+    if (!metricsTimer_) {
+        metricsTimer_ = new QTimer(this);
+        connect(metricsTimer_, &QTimer::timeout, this, &DeviceDetailWindow::updateFmMetrics);
+    }
+    metricsTimer_->start(500);
+
     streamStartButton->setEnabled(false);
     streamStopButton->setEnabled(true);
     streamStatusLabel->setStyleSheet("color: #00cc44;");
@@ -839,6 +846,8 @@ void DeviceDetailWindow::teardownStream() {
         pipeline_ = nullptr;
     }
 
+    if (metricsTimer_) metricsTimer_->stop();
+
     delete fftHandler_;      fftHandler_     = nullptr;
     delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
 
@@ -850,6 +859,39 @@ void DeviceDetailWindow::teardownStream() {
     if (fmAudio_) fmAudio_->teardown();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FM metrics
+// ═══════════════════════════════════════════════════════════════════════════════
+void DeviceDetailWindow::updateFmMetrics() {
+    if (!fmDemodHandler_ || !fmLevelLabel_) return;
+
+    const double snr   = fmDemodHandler_->snrDb();
+    const double ifRms = fmDemodHandler_->ifRms();
+
+    // Level bar: 10 blocks, each block ≈ 1.5 dB SNR (0..15 dB range)
+    constexpr int   kBlocks   = 10;
+    constexpr double kSnrMax  = 15.0;
+    const int filled = static_cast<int>(
+        std::clamp(snr / kSnrMax * kBlocks, 0.0, static_cast<double>(kBlocks)));
+
+    QString bar;
+    bar.reserve(kBlocks);
+    for (int i = 0; i < kBlocks; ++i)
+        bar += (i < filled) ? QChar(0x25AE) : QChar(0x25AF);  // ▮ / ▯
+
+    QString color;
+    if (snr > 6.0)       color = "#00cc44";   // green — good signal
+    else if (snr > 2.0)  color = "#ffaa00";   // orange — marginal
+    else                 color = "#888888";    // gray — noise
+
+    fmLevelLabel_->setStyleSheet(
+        QString("color: %1; font-size: 10px;").arg(color));
+    fmLevelLabel_->setText(
+        QString("%1  SNR %2 dB  IF %3")
+            .arg(bar)
+            .arg(snr,   0, 'f', 1)
+            .arg(ifRms, 0, 'f', 3));
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FFT / stream slots
@@ -873,6 +915,8 @@ void DeviceDetailWindow::onStreamError(const QString& error) {
 }
 
 void DeviceDetailWindow::onStreamFinished() {
+    if (metricsTimer_) metricsTimer_->stop();
+
     // streamWorker/streamThread are deleted via deleteLater connected to QThread::finished
     streamWorker = nullptr;
     streamThread = nullptr;

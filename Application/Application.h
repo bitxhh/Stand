@@ -144,6 +144,10 @@ private:
     std::vector<RawFileHandler*>     rawHandlers_;
     std::vector<BandpassHandler*>    wavHandlers_;
 
+    // ── Metrics ───────────────────────────────────────────────────────────────
+    QTimer* metricsTimer_{nullptr};
+    void    updateFmMetrics();
+
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();
     QWidget* createDeviceControlPage();
