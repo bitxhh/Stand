@@ -179,11 +179,9 @@ void LimeDevice::setSampleRate(double hz) {
 }
 
 double LimeDevice::sampleRate() const {
-    if (!handle_) return currentSampleRate_;
-    double hostRate = 0.0, rfRate = 0.0;
-    if (LMS_GetSampleRate(handle_, LMS_CH_RX, 0, &hostRate, &rfRate) != 0)
-        return currentSampleRate_;
-    return hostRate;
+    // LMS_GetSampleRate returns RF (ADC) rate, not the host-side rate.
+    // Return the cached host rate that was set via setSampleRate().
+    return currentSampleRate_;
 }
 
 QList<double> LimeDevice::supportedSampleRates() const {

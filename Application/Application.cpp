@@ -816,6 +816,9 @@ void DeviceDetailWindow::startStream() {
 
     streamThread->start();
 
+    // LMS_GetDeviceList (called by watchdog) causes USB interference during streaming.
+    connectionTimer->stop();
+
     // Start metrics refresh (500 ms interval)
     if (!metricsTimer_) {
         metricsTimer_ = new QTimer(this);
@@ -942,6 +945,9 @@ void DeviceDetailWindow::onStreamFinished() {
     if (fmAudio_) fmAudio_->teardown();
     if (fmStatusLabel) fmStatusLabel->setText("");
     if (fmLevelLabel_) fmLevelLabel_->setText("▯▯▯▯▯▯▯▯▯▯");
+
+    // Resume connection watchdog now that streaming has stopped.
+    connectionTimer->start();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
