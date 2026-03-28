@@ -69,6 +69,11 @@ public:
     // pga : 0–31 (0–31 dB, 1 dB/шаг)
     void setLimeGain(int lna, int tia, int pga);
 
+    static const QList<double> kSupportedRates;
+
+    // Доступ к LimeSuite info string — используется в LimeDeviceManager для сравнения устройств.
+    [[nodiscard]] const lms_info_str_t& limeInfo() const { return deviceId_; }
+
 private:
     void setState(DeviceState s);
     void setupStream();
@@ -87,6 +92,4 @@ private:
     bool              streamReady_{false};
 
     static constexpr double kMaxGainDb = 68.5;
-
-    static const QList<double> kSupportedRates;
 };
