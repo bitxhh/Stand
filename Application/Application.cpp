@@ -859,7 +859,13 @@ void DeviceDetailWindow::teardownStream() {
     for (auto* h : wavHandlers_) delete h;
     wavHandlers_.clear();
 
-    if (fmAudio_) fmAudio_->teardown();
+    if (fmAudio_) {
+        // Disconnect statusChanged before teardown so the emitted signal
+        // doesn't fire into partially-destroyed window state (e.g. during
+        // QObject child cleanup in the destructor).
+        disconnect(fmAudio_, nullptr, this, nullptr);
+        fmAudio_->teardown();
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1010,7 +1016,10 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
     if (!connected) {
         connectionTimer->stop();
         teardownStream();
-        emit deviceDisconnected();
+        // Defer the signal so we fully unwind the QFutureWatcher callback
+        // before the deviceDisconnected handler opens a QMessageBox (which
+        // would re-enter the event loop while still on the watcher's stack).
+        QTimer::singleShot(0, this, [this]() { emit deviceDisconnected(); });
     }
 }
 

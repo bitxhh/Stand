@@ -35,8 +35,7 @@ void StreamWorker::run() {
     pipeline_->notifyStarted(sr);
     running_.store(true);
 
-    int lastGoodRead = 0;
-    int diagCount    = 0;
+    int diagCount = 0;
 
     // Основной цикл
     while (running_.load()) {
@@ -54,16 +53,12 @@ void StreamWorker::run() {
         }
         if (n == 0) continue;
 
-        // USB dropout detection
-        if (lastGoodRead == kBlockSize && n < kBlockSize / 2) {
-            LOG_WARN("USB dropout: expected " + std::to_string(kBlockSize)
-                     + " got " + std::to_string(n));
-            emit errorOccurred(
-                "USB transfer error — stream stopped.\n"
-                "Unplug and replug the device if this recurs.");
-            break;
+        // Log partial reads but don't stop — LimeSuite sometimes delivers
+        // a smaller block after a USB hiccup and recovers on its own.
+        if (n < kBlockSize) {
+            LOG_WARN("readBlock partial: expected " + std::to_string(kBlockSize)
+                     + " got " + std::to_string(n) + " — continuing");
         }
-        lastGoodRead = n;
 
         pipeline_->dispatchBlock(buffer_.data(), n, sr);
     }
