@@ -607,7 +607,7 @@ void DeviceDetailWindow::setupFftPlot() {
     fftPlot->addGraph();
     fftPlot->graph(0)->setPen(QPen(QColor(0, 180, 255), 1.2));
 
-    fftPlot->xAxis->setLabel("Frequency offset (MHz)");
+    fftPlot->xAxis->setLabel("Frequency (MHz)");
     fftPlot->yAxis->setLabel("Power (dB)");
     fftPlot->yAxis->setRange(-120, 0);
 
@@ -730,6 +730,12 @@ void DeviceDetailWindow::onControllerError(const QString& message) {
 // ═══════════════════════════════════════════════════════════════════════════════
 void DeviceDetailWindow::startStream() {
     if (streamWorker) return;
+
+    // Always sync LO to the spin-box value before streaming — the user may have
+    // typed a frequency without pressing Apply, and we don't want to stream on
+    // the wrong frequency silently.
+    if (controller_->isInitialized())
+        controller_->setFrequency(freqSpinBox->value());
 
     LOG_INFO("startStream: record=" + std::to_string(recordCheckBox->isChecked())
              + " wav=" + std::to_string(wavCheckBox->isChecked())
