@@ -141,6 +141,13 @@ void LimeDevice::init() {
     if (LMS_SetSampleRate(handle_, currentSampleRate_, 2) != 0)
         throwLime("LMS_SetSampleRate failed");
 
+    // Warm up WinUSB I/O context from the main thread.
+    // LMS_SetupStream must be called at least once on the main thread before
+    // LMS_StartStream is called from the worker thread — otherwise WinUSB
+    // ReadFile requests fail silently (ret=0) on Windows.
+    // startStream() will always teardown+setup to handle SR changes.
+    setupStream();
+
     setState(DeviceState::Ready);
     LOG_INFO("LimeDevice ready: " + serial_);
 }
@@ -285,6 +292,11 @@ void LimeDevice::teardownStream() {
 }
 
 void LimeDevice::startStream() {
+    // Always teardown+setup before each start so USB packet sizing matches
+    // the current sample rate (may have changed since init or last stream).
+    // This mirrors the old StreamWorker pattern that fixed "TransferPacket
+    // Read failed" on Windows.
+    if (streamReady_) teardownStream();
     setupStream();
 
     if (LMS_StartStream(&streamId_) != 0) {
