@@ -38,4 +38,11 @@ private:
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point lastPlot_;
+
+    // Temporal averaging — exponential moving average over FFT frames.
+    // Smooths instantaneous noise spikes into the hill-shaped spectrum
+    // that matches what HDSDR displays.
+    static constexpr double kAlpha = 0.3;   // blend factor: 1.0 = no averaging
+    QVector<double> avgPowerDb_;
+    double          avgCenterMhz_{0.0};     // reset avg when center freq changes
 };

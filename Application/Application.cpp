@@ -84,6 +84,11 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
 }
 
 DeviceDetailWindow::~DeviceDetailWindow() {
+    // Stop the watchdog before teardown — the QFutureWatcher captures `this`
+    // in its lambda; if the future is still in-flight when we start destroying
+    // members, it would access freed memory via the this pointer.
+    connectionTimer->stop();
+    connectionWatcher.waitForFinished();   // blocks until any pending scan completes
     teardownStream();
 }
 
@@ -954,7 +959,10 @@ void DeviceDetailWindow::onStreamFinished() {
     streamStopButton->setEnabled(false);
     streamStatusLabel->setStyleSheet("color: gray;");
     streamStatusLabel->setText("Idle");
-    if (fmAudio_) fmAudio_->teardown();
+    if (fmAudio_) {
+        disconnect(fmAudio_, nullptr, this, nullptr);
+        fmAudio_->teardown();
+    }
     if (fmStatusLabel) fmStatusLabel->setText("");
     if (fmLevelLabel_) fmLevelLabel_->setText("▯▯▯▯▯▯▯▯▯▯");
 

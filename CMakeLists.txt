@@ -133,3 +133,47 @@ add_custom_command(TARGET Stand POST_BUILD
         "$<TARGET_FILE:Stand>"
         COMMENT "Running windeployqt"
 )
+
+# ─── Tests ────────────────────────────────────────────────────────────────────
+enable_testing()
+
+include(FetchContent)
+FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.7.1
+)
+FetchContent_MakeAvailable(Catch2)
+
+add_executable(StandTests
+        Tests/test_fmdemod.cpp
+        Tests/test_fftprocessor.cpp
+
+        DSP/FmDemodulator.cpp
+        DSP/FftProcessor.cpp
+        Core/Logger.cpp
+)
+
+target_include_directories(StandTests PRIVATE
+        "${CMAKE_SOURCE_DIR}/Core"
+        "${CMAKE_SOURCE_DIR}/DSP"
+        "${FFTW_INCLUDE_DIR}"
+)
+
+target_link_libraries(StandTests
+        PRIVATE
+        Catch2::Catch2WithMain
+        Qt6::Core
+        "${FFTW_LIB_DIR}/libfftw3-3.dll.a"
+)
+
+# Copy FFTW DLL next to the test binary so it can run on Windows
+add_custom_command(TARGET StandTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${FFTW_BIN_DIR}/libfftw3-3.dll"
+        "$<TARGET_FILE_DIR:StandTests>/libfftw3-3.dll"
+        COMMENT "Copying FFTW DLL for tests"
+)
+
+include(Catch)
+catch_discover_tests(StandTests)

@@ -65,6 +65,9 @@ public:
     [[nodiscard]] double ifRms()   const { return ifRmsOut_; }
     [[nodiscard]] double snrDb()   const { return snrDbOut_; }
 
+    // FIR design helper — public for unit tests.
+    static std::vector<double> designLowpassFir(int numTaps, double cutoffNorm);
+
 private:
     // ── Parameters ───────────────────────────────────────────────────────────
     double inputSR_;
@@ -131,8 +134,6 @@ private:
     int                 fir2Head_{0};
     int                 dec2Counter_{0};
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
-    static std::vector<double> designLowpassFir(int numTaps, double cutoffNorm);
-    std::complex<double>       fir1Step(std::complex<double> x);
-    double                     fir2Step(double x);
+    std::complex<double> fir1Step(std::complex<double> x);
+    double               fir2Step(double x);
 };
