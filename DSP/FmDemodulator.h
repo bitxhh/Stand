@@ -52,6 +52,12 @@ public:
     // bandwidthHz: one-sided cutoff, clamped to [50 kHz, ifSR/2 * 0.9].
     void setBandwidth(double bandwidthHz);
 
+    // Retune NCO to a new station offset within the current capture band.
+    // offsetHz = target station frequency − LO frequency (signed).
+    // Resets filter delay lines, DC blocker, and noise floor — brief audio glitch
+    // expected (same as setBandwidth).
+    void setOffset(double offsetHz);
+
     [[nodiscard]] double audioSampleRate() const { return audioSR_; }
     [[nodiscard]] double ifSampleRate()    const { return ifSR_;    }
     [[nodiscard]] int    decimation1()     const { return D1_;      }

@@ -31,6 +31,10 @@ public:
     // Меняет ширину полосы на лету (применяется в следующем processBlock)
     void setBandwidth(double hz);
 
+    // Меняет смещение NCO на лету — перенастройка VFO внутри текущей полосы.
+    // offsetHz = (vfoFreqHz - loFreqHz): положительное → выше LO.
+    void setOffset(double hz);
+
     // Метрики качества сигнала — потокобезопасны
     [[nodiscard]] double snrDb() const { return dem_ ? dem_->snrDb() : 0.0; }
     [[nodiscard]] double ifRms() const { return dem_ ? dem_->ifRms() : 0.0; }
@@ -49,5 +53,6 @@ private:
     double bandwidthHz_;
 
     std::unique_ptr<FmDemodulator> dem_;
-    std::atomic<double>            pendingBw_{0.0};   // 0 = нет ожидающего обновления
+    std::atomic<double> pendingBw_{0.0};       // 0 = нет ожидающего обновления
+    std::atomic<double> pendingOffset_{1e38};  // 1e38 = sentinel «нет обновления»
 };

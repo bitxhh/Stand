@@ -450,6 +450,7 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         fmBwSpin_->setEnabled(on);
         fmDeemphCombo->setEnabled(on);
         fmVolumeSlider->setEnabled(on);
+        if (fmVfoSpin_) fmVfoSpin_->setEnabled(on);
         updateFilterBand(on);
         if (!on && fmAudio_) fmAudio_->teardown();
     });
@@ -466,8 +467,13 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         if (fmDemodHandler_) fmDemodHandler_->setBandwidth(bwKHz * 1000.0);
     });
 
-    // When LO changes → filter band follows it automatically
-    connect(freqSpinBox, &QDoubleSpinBox::valueChanged, this, [this](double /*loMHz*/) {
+    // When LO changes → update VFO range and keep filter band centred correctly
+    connect(freqSpinBox, &QDoubleSpinBox::valueChanged, this, [this](double loMHz) {
+        if (fmVfoSpin_) {
+            const double sr = device->sampleRate();
+            const double halfBand = (sr > 0 ? sr / 2.0 : 2e6) / 1e6;
+            fmVfoSpin_->setRange(loMHz - halfBand, loMHz + halfBand);
+        }
         updateFilterBand(fmCheckBox->isChecked());
     });
 
@@ -483,6 +489,43 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     fmHlay->addWidget(fmVolumeSlider);
     fmHlay->addWidget(fmVolumeLabel);
     fmHlay->addStretch();
+
+    // ── VFO tuner ─────────────────────────────────────────────────────────────
+    // Allows tuning to any station within the capture band without retuning LO.
+    // Click on the spectrum to jump the VFO there, or edit the spinbox directly.
+    auto* vfoRow  = new QWidget(page);
+    auto* vfoHlay = new QHBoxLayout(vfoRow);
+    vfoHlay->setContentsMargins(0, 0, 0, 0);
+
+    auto* vfoLabel = new QLabel("VFO:", vfoRow);
+    vfoLabel->setToolTip("Tune FM demodulator to a specific station.\n"
+                         "Click anywhere on the spectrum to jump here.");
+
+    fmVfoSpin_ = new QDoubleSpinBox(vfoRow);
+    fmVfoSpin_->setRange(kFreqMinMHz, kFreqMaxMHz);
+    fmVfoSpin_->setDecimals(3);
+    fmVfoSpin_->setSingleStep(0.1);
+    fmVfoSpin_->setValue(kFreqDefaultMHz);
+    fmVfoSpin_->setFixedWidth(110);
+    fmVfoSpin_->setEnabled(false);
+    fmVfoSpin_->setToolTip("Station frequency (MHz). Edit or click the spectrum.");
+
+    auto* vfoHintLabel = new QLabel("← click spectrum to tune", vfoRow);
+    vfoHintLabel->setStyleSheet("color: gray; font-size: 10px;");
+
+    vfoHlay->addWidget(vfoLabel);
+    vfoHlay->addWidget(fmVfoSpin_);
+    vfoHlay->addWidget(vfoHintLabel);
+    vfoHlay->addStretch();
+
+    // VFO changed → update filter band + apply NCO offset to running demodulator
+    connect(fmVfoSpin_, &QDoubleSpinBox::valueChanged, this, [this](double vfoMHz) {
+        updateFilterBand(fmCheckBox->isChecked());
+        if (fmDemodHandler_) {
+            const double offsetHz = (vfoMHz - freqSpinBox->value()) * 1e6;
+            fmDemodHandler_->setOffset(offsetHz);
+        }
+    });
 
     // ── FM status + second row with Apply button ──────────────────────────────
     // Apply allows reconfiguring FM while stream is already running.
@@ -512,12 +555,16 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
             return;
         }
 
-        // Offset is always 0 — user tunes LO directly to the station
-        const double tau  = fmDeemphCombo->currentData().toDouble();
-        const double bwHz = fmBwSpin_->value() * 1000.0;
+        const double tau      = fmDeemphCombo->currentData().toDouble();
+        const double bwHz     = fmBwSpin_->value() * 1000.0;
+        const double offsetHz = fmVfoSpin_
+                                ? (fmVfoSpin_->value() - freqSpinBox->value()) * 1e6
+                                : 0.0;
 
         LOG_INFO("Apply FM: LO=" + std::to_string(freqSpinBox->value())
-                 + " MHz  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
+                 + " MHz  VFO=" + std::to_string(fmVfoSpin_ ? fmVfoSpin_->value() : freqSpinBox->value())
+                 + " MHz  offset=" + std::to_string(static_cast<int>(offsetHz))
+                 + " Hz  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
 
         delete fmAudio_;
         fmAudio_ = new FmAudioOutput(this);
@@ -544,8 +591,8 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
                 delete fmDemodHandler_;
                 fmDemodHandler_ = nullptr;
             }
-            // Create new handler with updated parameters
-            fmDemodHandler_ = new FmDemodHandler(0.0, tau, bwHz, this);
+            // Create new handler with updated parameters (VFO offset)
+            fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
             connect(fmDemodHandler_, &FmDemodHandler::audioReady,
                     fmAudio_,        &FmAudioOutput::push,
                     Qt::QueuedConnection);
@@ -598,6 +645,7 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     layout->addWidget(recordRow);
     layout->addWidget(wavRow);
     layout->addWidget(fmRow);
+    layout->addWidget(vfoRow);
     layout->addWidget(fmRow2);
     layout->addWidget(fmStatusLabel);
     layout->addWidget(btnRow);
@@ -669,17 +717,31 @@ void DeviceDetailWindow::setupFftPlot() {
                 std::min(newRange.upper, yMax));
         }
     });
+
+    // Click on spectrum → tune VFO to that frequency (FM must be enabled)
+    connect(fftPlot, &QCustomPlot::mousePress, this,
+            [this](QMouseEvent* event) {
+        if (!fmCheckBox || !fmCheckBox->isChecked()) return;
+        if (!fmVfoSpin_) return;
+        const double clickedMHz = fftPlot->xAxis->pixelToCoord(event->pos().x());
+        // Clamp to the current capture band shown on the plot
+        const double lo   = freqSpinBox->value();
+        const double sr   = device->sampleRate();
+        const double half = (sr > 0 ? sr / 2.0 : 2e6) / 1e6;
+        const double clamped = std::clamp(clickedMHz, lo - half, lo + half);
+        fmVfoSpin_->setValue(clamped);
+    });
 }
 
-// Filter band: ±BW/2 around LO (center freq), visible only when FM is on.
+// Filter band: ±BW/2 around VFO frequency, visible only when FM is on.
 void DeviceDetailWindow::updateFilterBand(bool visible) {
     if (!vfoBand_) return;
     vfoBand_->setVisible(visible);
     if (visible) {
-        const double loMHz = freqSpinBox->value();
-        const double bwMHz = (fmBwSpin_ ? fmBwSpin_->value() : 100.0) / 1000.0;
-        vfoBand_->topLeft->setCoords    (loMHz - bwMHz, 10.0);
-        vfoBand_->bottomRight->setCoords(loMHz + bwMHz, -130.0);
+        const double vfoMHz = fmVfoSpin_ ? fmVfoSpin_->value() : freqSpinBox->value();
+        const double bwMHz  = (fmBwSpin_ ? fmBwSpin_->value() : 100.0) / 1000.0;
+        vfoBand_->topLeft->setCoords    (vfoMHz - bwMHz, 10.0);
+        vfoBand_->bottomRight->setCoords(vfoMHz + bwMHz, -130.0);
     }
     fftPlot->replot(QCustomPlot::rpQueuedReplot);
 }
@@ -781,13 +843,18 @@ void DeviceDetailWindow::startStream() {
 
     // FM demodulation
     if (fmCheckBox->isChecked()) {
-        const double tau  = fmDeemphCombo->currentData().toDouble();
-        const double bwHz = fmBwSpin_->value() * 1000.0;
+        const double tau      = fmDeemphCombo->currentData().toDouble();
+        const double bwHz     = fmBwSpin_->value() * 1000.0;
+        const double offsetHz = fmVfoSpin_
+                                ? (fmVfoSpin_->value() - freqSpinBox->value()) * 1e6
+                                : 0.0;
 
         LOG_INFO("FM demod: LO=" + std::to_string(freqSpinBox->value())
-                 + " MHz  offset=0  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
+                 + " MHz  VFO=" + std::to_string(fmVfoSpin_ ? fmVfoSpin_->value() : freqSpinBox->value())
+                 + " MHz  offset=" + std::to_string(static_cast<int>(offsetHz))
+                 + " Hz  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
 
-        fmDemodHandler_ = new FmDemodHandler(0.0, tau, bwHz, this);
+        fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
         pipeline_->addHandler(fmDemodHandler_);
 
         delete fmAudio_;

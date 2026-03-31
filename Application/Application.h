@@ -120,6 +120,7 @@ private:
 
     // ── FM Radio ──────────────────────────────────────────────────────────────
     QCheckBox*      fmCheckBox{nullptr};
+    QDoubleSpinBox* fmVfoSpin_{nullptr};     // VFO absolute freq (MHz)
     QDoubleSpinBox* fmBwSpin_{nullptr};
     QComboBox*      fmDeemphCombo{nullptr};
     QSlider*        fmVolumeSlider{nullptr};

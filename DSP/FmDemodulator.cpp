@@ -100,6 +100,39 @@ void FmDemodulator::setBandwidth(double bandwidthHz) {
 }
 
 // ---------------------------------------------------------------------------
+// setOffset — retune NCO, reset all state that depends on signal position
+// ---------------------------------------------------------------------------
+void FmDemodulator::setOffset(double offsetHz) {
+    stationOffset_ = offsetHz;
+    ncoPhaseInc_   = -2.0 * kPi * stationOffset_ / inputSR_;
+
+    // Reset DC blocker — previous input position is now irrelevant
+    dcPrevIn_  = {0.0, 0.0};
+    dcPrevOut_ = {0.0, 0.0};
+
+    // Reset FIR1 delay line and decimation counter
+    std::fill(fir1Delay_.begin(), fir1Delay_.end(), std::complex<double>{0.0, 0.0});
+    fir1Head_    = 0;
+    dec1Counter_ = 0;
+
+    // Reset discriminator state
+    prevIF_ = {1.0, 0.0};
+
+    // Reset FIR2 delay line and decimation counter
+    std::fill(fir2Delay_.begin(), fir2Delay_.end(), 0.0);
+    fir2Head_    = 0;
+    dec2Counter_ = 0;
+
+    // Re-calibrate noise floor at new frequency
+    noiseFloor_  = -1.0;
+    noiseWarmup_ = 0;
+
+    LOG_INFO("FmDemodulator: offset set to "
+             + std::to_string(static_cast<int>(offsetHz)) + " Hz"
+             + "  ncoPhaseInc=" + std::to_string(ncoPhaseInc_));
+}
+
+// ---------------------------------------------------------------------------
 // Windowed-sinc FIR design — Blackman window (-74 dB stopband)
 // Identical to BandpassExporter::designLowpassFir — factored here to keep
 // FmDemodulator self-contained.
