@@ -160,9 +160,27 @@ void LimeDevice::calibrate() {
         throw LimeInitException("Cannot calibrate — device not initialized");
 
     const double calBw = std::max(currentSampleRate_, 2.5e6);
+
+    // LimeSuite LMS_Calibrate can leave the LNA in internal loopback mode
+    // when called at high gain with an antenna connected (MCU error 5).
+    // The hardware recovers reliably if gain is set to 0 dB before calibration.
+    const double savedGain = currentGainDb_;
+    if (savedGain > 0.0) {
+        LOG_INFO("Calibrate: lowering gain to 0 dB (was " + std::to_string(savedGain) + " dB)");
+        LMS_SetGaindB(handle_, LMS_CH_RX, 0, 0);
+    }
+
     LOG_INFO("Calibrating " + serial_ + " at " + std::to_string(calBw) + " Hz");
 
-    if (LMS_Calibrate(handle_, LMS_CH_RX, 0, calBw, 0) != 0)
+    const bool ok = (LMS_Calibrate(handle_, LMS_CH_RX, 0, calBw, 0) == 0);
+
+    // Always restore gain, even if calibration failed
+    if (savedGain > 0.0) {
+        LOG_INFO("Calibrate: restoring gain to " + std::to_string(savedGain) + " dB");
+        LMS_SetGaindB(handle_, LMS_CH_RX, 0, static_cast<unsigned>(savedGain));
+    }
+
+    if (!ok)
         throwLime("LMS_Calibrate failed");
 
     LOG_INFO("Calibration done: " + serial_);
