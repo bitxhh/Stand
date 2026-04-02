@@ -35,8 +35,13 @@ void FmDemodHandler::onStreamStopped() {
     dem_.reset();
 }
 
-void FmDemodHandler::processBlock(const int16_t* iq, int count, double /*sampleRateHz*/) {
-    if (!dem_) return;
+void FmDemodHandler::processBlock(const int16_t* iq, int count, double sampleRateHz) {
+    // Lazy-init: handler may have been added mid-stream via pipeline_->addHandler(),
+    // in which case onStreamStarted() was never called for it.
+    if (!dem_) {
+        onStreamStarted(sampleRateHz);
+        if (!dem_) return;
+    }
 
     // Применяем ожидающее изменение полосы
     const double pending = pendingBw_.exchange(0.0);

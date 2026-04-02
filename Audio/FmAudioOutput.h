@@ -75,11 +75,11 @@ private:
     // ── AGC (RMS-based automatic gain control) ────────────────────────────────
     // Adapts gain so output RMS ≈ kAgcTarget regardless of signal strength.
     // Prevents clipping on strong stations; boosts weak/quiet audio.
-    float agcGain_{10.0f};
+    float agcGain_{1.0f};
     static constexpr float kAgcTarget  = 0.12f;   // target RMS
     static constexpr float kAgcAttack  = 0.10f;   // fast decay on loud signal
     static constexpr float kAgcRelease = 0.002f;  // slow rise on quiet signal
-    static constexpr float kAgcMin     = 1.0f;    // floor — never amplify × < 1
+    static constexpr float kAgcMin     = 0.1f;    // floor — allows reducing gain when input is already loud
     static constexpr float kAgcMax     = 50.0f;   // ceiling — don't amplify pure noise
 
     bool openSink(double sampleRateHz);

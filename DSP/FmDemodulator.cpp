@@ -9,17 +9,21 @@
 // Constants
 // ---------------------------------------------------------------------------
 static constexpr double kPi       = 3.14159265358979323846;
-// FIR1: 31 taps is sufficient for a 100 kHz anti-alias lowpass at 2 MHz input.
-// Blackman window gives -74 dB stopband even at 31 taps.
-// Previous value of 127 caused USB FIFO overflow in debug builds:
-//   127 taps × 16384 samples ≈ 2M complex MACs per 8 ms block → too slow.
-// 31 taps × 16384 = 508k complex MACs → fits comfortably in a debug build.
+// FIR1: complex anti-alias lowpass before D1 decimation.
+// At 500 kHz IF the Nyquist edge is 250 kHz.  With 150 kHz passband the
+// transition band is 100 kHz = 0.025 normalised.  Blackman needs ~12/Δf
+// taps for full -74 dB stopband → 480, but 255 gives ~-55 dB at Nyquist
+// which is sufficient (adjacent FM stations are 200-300 kHz apart).
+// Debug keeps 31 taps to avoid USB FIFO overflow at high sample rates.
 #ifndef NDEBUG
 static constexpr int kFir1Taps = 31;    // debug: fast enough, adequate stopband
 #else
-static constexpr int kFir1Taps = 127;   // release: full stopband attenuation
+static constexpr int kFir1Taps = 255;   // release: good adjacent-channel rejection
 #endif
-static constexpr int    kFir2Taps =  63;   // real lowpass, ~15 kHz cutoff
+// 255 taps: stopband starts at ~21 kHz, fully rejects FM stereo subcarrier
+// (23–53 kHz) before D2=10 decimation to 50 kHz.  At 63 taps the stopband
+// only started at ~41 kHz, letting stereo fold into 0–15 kHz audio.
+static constexpr int    kFir2Taps = 255;   // real lowpass, ~15 kHz cutoff
 static constexpr double kFmMaxDev = 75'000.0;
 
 // ---------------------------------------------------------------------------
@@ -34,14 +38,17 @@ FmDemodulator::FmDemodulator(double inputSampleRateHz,
     , deemphTau_(deemphTauSec)
     , bandwidth_(bandwidthHz)
 {
-    // ── Stage-1 decimation: target IF ≈ 250 kHz ─────────────────────────────
-    D1_   = std::max(1, static_cast<int>(std::round(inputSR_ / 250'000.0)));
+    // ── Stage-1 decimation: target IF ≈ 500 kHz ─────────────────────────────
+    // 500 kHz (not 250 kHz) gives a 100 kHz transition band (Nyquist 250 kHz
+    // minus 150 kHz passband).  255 taps with Blackman window achieve ~-55 dB
+    // at 250 kHz — sufficient for adjacent FM channel rejection.
+    D1_   = std::max(1, static_cast<int>(std::round(inputSR_ / 500'000.0)));
     ifSR_ = inputSR_ / D1_;
 
-    if (ifSR_ < 150'000.0)
+    if (ifSR_ < 400'000.0)
         throw std::invalid_argument(
             "FmDemodulator: IF rate " + std::to_string(static_cast<int>(ifSR_))
-            + " Hz is too low for WBFM (need ≥ 150 kHz). "
+            + " Hz is too low for WBFM (need ≥ 400 kHz). "
             "Raise the device sample rate.");
 
     // ── Stage-2 decimation: fixed D2 = 5 ────────────────────────────────────
@@ -72,7 +79,7 @@ FmDemodulator::FmDemodulator(double inputSampleRateHz,
              + " D2=" + std::to_string(D2_)
              + " audio=" + std::to_string(static_cast<int>(audioSR_)) + " Hz"
              + " BW=" + std::to_string(static_cast<int>(bandwidth_)) + " Hz"
-             + " deemphGain_=" + std::to_string(demodGain_)
+             + " demodGain=" + std::to_string(demodGain_)
              + " deemph τ=" + std::to_string(static_cast<int>(deemphTau_ * 1e6)) + " µs");
 }
 
@@ -166,12 +173,16 @@ std::vector<double> FmDemodulator::designLowpassFir(int numTaps, double cutoffNo
 }
 
 // ---------------------------------------------------------------------------
-// Stage-1 FIR step — one complex sample in, one complex sample out
+// Stage-1 FIR — split into push (O(1)) and compute (O(N)) so that the
+// expensive dot product is only evaluated at decimation points (every D1
+// input samples).  This gives a D1× speedup (8× at the typical SR set).
 // ---------------------------------------------------------------------------
-std::complex<double> FmDemodulator::fir1Step(std::complex<double> x) {
+void FmDemodulator::fir1Push(std::complex<double> x) {
     fir1Delay_[fir1Head_] = x;
     fir1Head_ = (fir1Head_ + 1) % kFir1Taps;
+}
 
+std::complex<double> FmDemodulator::fir1Compute() const {
     std::complex<double> acc{0.0, 0.0};
     int idx = fir1Head_;
     for (int i = 0; i < kFir1Taps; ++i) {
@@ -233,29 +244,37 @@ QVector<float> FmDemodulator::pushBlock(const QVector<int16_t>& iqBlock) {
         if (ncoPhase_ >  kPi) ncoPhase_ -= 2.0 * kPi;
         if (ncoPhase_ < -kPi) ncoPhase_ += 2.0 * kPi;
 
-        // ── 4. Stage-1 FIR lowpass ────────────────────────────────────────────
-        const auto filtered1 = fir1Step(s);
+        // ── 4. Stage-1 FIR: push sample into delay line (O(1)) ──────────────
+        fir1Push(s);
 
-        // ── 5. Stage-1 decimation ─────────────────────────────────────────────
+        // ── 5. Stage-1 decimation — compute FIR only at output points ────────
         if (++dec1Counter_ < D1_) continue;
         dec1Counter_ = 0;
+
+        const auto filtered1 = fir1Compute();   // O(N), but only every D1 samples
 
         // ── 6. IF signal power — noise floor calibration + SNR ───────────────
         const double ifPower = filtered1.real() * filtered1.real()
                              + filtered1.imag() * filtered1.imag();
         ifPowerAvg_ = (1.0 - kPowerAlpha) * ifPowerAvg_ + kPowerAlpha * ifPower;
 
-        // Calibrate noise floor during warmup: average over the first
-        // kNoiseFloorWarmup IF-samples after construction / setBandwidth.
-        // Assumes the first ~8 ms of samples are noise-only (no valid FM signal
-        // while the FIR delay line is still filling). This is always true at
-        // stream start because LMS_StartStream itself takes >8 ms.
-        if (noiseWarmup_ < kNoiseFloorWarmup) {
-            if (noiseFloor_ < 0.0)
-                noiseFloor_ = ifPowerAvg_;
-            else
-                noiseFloor_ = noiseFloor_ * 0.999 + ifPowerAvg_ * 0.001;
-            ++noiseWarmup_;
+        // Track noise floor as a slow-decaying minimum of IF power.
+        // FM signals have nearly constant envelope, so the "quiet periods"
+        // approach doesn't work.  Instead: initialise to current power, then
+        // decay slowly toward the minimum seen so far.  When the signal drops
+        // (e.g. briefly off-tune), the floor drifts down; in steady state it
+        // sits just below the signal level, giving a realistic SNR estimate.
+        // NOTE: the old warmup-based calibration assumed the first 8 ms were
+        // signal-free, but LMS_StartStream delivers samples almost immediately,
+        // so noiseFloor_ ended up ≈ signal power → SNR always ≈ 0 → NOISE.
+        if (noiseFloor_ < 0.0) {
+            noiseFloor_ = ifPowerAvg_;
+        } else if (ifPowerAvg_ < noiseFloor_) {
+            // Current power dipped below floor — update down quickly
+            noiseFloor_ = noiseFloor_ * 0.99 + ifPowerAvg_ * 0.01;
+        } else {
+            // Drift floor up very slowly so it tracks long-term noise changes
+            noiseFloor_ = noiseFloor_ * 0.9999 + ifPowerAvg_ * 0.0001;
         }
 
         // ── 7. FM discriminator ───────────────────────────────────────────────

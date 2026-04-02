@@ -155,87 +155,33 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
             controller_->setSampleRate(sampleRateSelector->currentData().toDouble());
     });
 
-    auto makeGainRow = [&](const QString& name, int min, int max,
-                           QSlider*& slider, QLabel*& valLabel,
-                           const QString& tooltip) -> QWidget* {
-        auto* row  = new QWidget(page);
-        auto* hlay = new QHBoxLayout(row);
-        hlay->setContentsMargins(0, 0, 0, 0);
-        auto* lbl  = new QLabel(name, row);
-        lbl->setFixedWidth(36);
-        lbl->setToolTip(tooltip);
-        slider = new QSlider(Qt::Horizontal, row);
-        slider->setRange(min, max);
-        slider->setValue(min);
-        slider->setEnabled(ready);
-        slider->setToolTip(tooltip);
-        valLabel = new QLabel("0 dB", row);
-        valLabel->setFixedWidth(52);
-        hlay->addWidget(lbl);
-        hlay->addWidget(slider);
-        hlay->addWidget(valLabel);
-        return row;
-    };
+    // Single gain slider — LimeSuite distributes across LNA+PGA automatically.
+    // TIA is fixed at max (12 dB) in LimeDevice::init() via LMS_WriteParam.
+    auto* gainRow  = new QWidget(page);
+    auto* gainHlay = new QHBoxLayout(gainRow);
+    gainHlay->setContentsMargins(0, 0, 0, 0);
+    auto* gainLbl  = new QLabel("Gain", gainRow);
+    gainLbl->setFixedWidth(36);
+    gainLbl->setToolTip("Total RX gain 0–68 dB.\n"
+                        "TIA is fixed at 12 dB (max); LimeSuite distributes\n"
+                        "the remaining gain across LNA and PGA automatically.");
+    gainSlider_ = new QSlider(Qt::Horizontal, gainRow);
+    gainSlider_->setRange(0, 68);
+    gainSlider_->setValue(0);
+    gainSlider_->setEnabled(ready);
+    gainSlider_->setToolTip(gainLbl->toolTip());
+    gainValueLabel_ = new QLabel("0 dB", gainRow);
+    gainValueLabel_->setFixedWidth(52);
+    gainHlay->addWidget(gainLbl);
+    gainHlay->addWidget(gainSlider_);
+    gainHlay->addWidget(gainValueLabel_);
 
-    auto* lnaRow = makeGainRow("LNA", 0, 5, lnaSlider, lnaValueLabel,
-        "Low Noise Amplifier — RF front-end gain.\n"
-        "0→0 dB  1→5 dB  2→10 dB  3→15 dB  4→20 dB  5→25.5 dB\n"
-        "Start here: higher LNA improves SNR on weak signals.");
-    auto* pgaRow = makeGainRow("PGA", 0, 31, pgaSlider, pgaValueLabel,
-        "Programmable Gain Amplifier — baseband fine-tune.\n"
-        "0..31 dB in 1 dB steps. Does not affect noise figure.\n"
-        "Use to trim output level after setting LNA and TIA.");
-
-    // TIA has only 3 states — QComboBox is more usable than a tiny slider
-    auto* tiaRow  = new QWidget(page);
-    auto* tiaHlay = new QHBoxLayout(tiaRow);
-    tiaHlay->setContentsMargins(0, 0, 0, 0);
-    auto* tiaLbl  = new QLabel("TIA", tiaRow);
-    tiaLbl->setFixedWidth(36);
-    tiaLbl->setToolTip("Trans-Impedance Amplifier — first IF gain stage.\n"
-                       "Increase after LNA for a better noise floor.");
-    tiaCombo_ = new QComboBox(tiaRow);
-    tiaCombo_->addItem("0 dB",  0);
-    tiaCombo_->addItem("9 dB",  1);
-    tiaCombo_->addItem("12 dB", 2);
-    tiaCombo_->setEnabled(ready);
-    tiaCombo_->setToolTip(tiaLbl->toolTip());
-    tiaHlay->addWidget(tiaLbl);
-    tiaHlay->addWidget(tiaCombo_);
-    tiaHlay->addStretch();
-
-    // Wire LNA and PGA sliders — show dB value in the label
-    auto wireLnaSlider = [this](QSlider* s, QLabel* lbl) {
-        connect(s, &QSlider::valueChanged, lbl, [lbl](int v) {
-            constexpr double db[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.5};
-            lbl->setText(QString("%1 dB").arg(db[qBound(0, v, 5)], 0, 'f', 1));
-        });
-        connect(s, &QSlider::sliderReleased, this, [this]() {
-            controller_->setGain(lnaSlider->value(),
-                                 tiaCombo_->currentData().toInt(),
-                                 pgaSlider->value());
-        });
-    };
-    auto wirePgaSlider = [this](QSlider* s, QLabel* lbl) {
-        connect(s, &QSlider::valueChanged, lbl, [lbl](int v) {
-            lbl->setText(QString("%1 dB").arg(v));
-        });
-        connect(s, &QSlider::sliderReleased, this, [this]() {
-            controller_->setGain(lnaSlider->value(),
-                                 tiaCombo_->currentData().toInt(),
-                                 pgaSlider->value());
-        });
-    };
-    // TIA combo: apply immediately on change
-    connect(tiaCombo_, &QComboBox::currentIndexChanged, this, [this]() {
-        if (controller_->isInitialized())
-            controller_->setGain(lnaSlider->value(),
-                                 tiaCombo_->currentData().toInt(),
-                                 pgaSlider->value());
+    connect(gainSlider_, &QSlider::valueChanged, gainValueLabel_, [this](int v) {
+        gainValueLabel_->setText(QString("%1 dB").arg(v));
     });
-
-    wireLnaSlider(lnaSlider, lnaValueLabel);
-    wirePgaSlider(pgaSlider, pgaValueLabel);
+    connect(gainSlider_, &QSlider::sliderReleased, this, [this]() {
+        controller_->setGain(gainSlider_->value());
+    });
 
     layout->addWidget(title);
     layout->addSpacing(8);
@@ -245,15 +191,12 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addWidget(new QLabel("Sample rate", page));
     layout->addWidget(sampleRateSelector);
     layout->addSpacing(12);
-    auto* gainLabel = new QLabel("Gain (LNA → TIA → PGA)", page);
-    auto* gainHint  = new QLabel(
-        "Recommended for FM: LNA=3–4, TIA=9–12 dB, PGA=10–20", page);
+    auto* gainLabel = new QLabel("Gain", page);
+    auto* gainHint  = new QLabel("Recommended for FM: 30–50 dB", page);
     gainHint->setStyleSheet("color: gray; font-size: 10px;");
     layout->addWidget(gainLabel);
     layout->addWidget(gainHint);
-    layout->addWidget(lnaRow);
-    layout->addWidget(tiaRow);
-    layout->addWidget(pgaRow);
+    layout->addWidget(gainRow);
     layout->addSpacing(12);
     layout->addWidget(initButton);
     layout->addWidget(calibrateButton);
@@ -430,10 +373,10 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     // De-emphasis
     auto* fmDeemphLabel = new QLabel("De-emph:", fmRow);
     fmDeemphCombo = new QComboBox(fmRow);
-    fmDeemphCombo->addItem("EU  75 µs", 75e-6);
-    fmDeemphCombo->addItem("US  50 µs", 50e-6);
+    fmDeemphCombo->addItem("EU  50 µs", 50e-6);
+    fmDeemphCombo->addItem("US  75 µs", 75e-6);
     fmDeemphCombo->setEnabled(false);
-    fmDeemphCombo->setToolTip("Europe / most of the world: 75 µs\nUSA, Japan: 50 µs");
+    fmDeemphCombo->setToolTip("Europe / Russia / most of the world: 50 µs\nUSA, Canada, Japan: 75 µs");
 
     // Volume
     auto* fmVolLabel = new QLabel("Vol:", fmRow);
@@ -445,14 +388,63 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     fmVolumeLabel = new QLabel("80%", fmRow);
     fmVolumeLabel->setFixedWidth(34);
 
-    // Enable/disable controls and update filter band on spectrum
+    // Enable/disable controls and start/stop FM demodulator immediately.
     connect(fmCheckBox, &QCheckBox::toggled, this, [this](bool on) {
         fmBwSpin_->setEnabled(on);
         fmDeemphCombo->setEnabled(on);
         fmVolumeSlider->setEnabled(on);
         if (fmVfoSpin_) fmVfoSpin_->setEnabled(on);
         updateFilterBand(on);
-        if (!on && fmAudio_) fmAudio_->teardown();
+
+        if (!on) {
+            // FM disabled: remove handler from the running pipeline (if any)
+            if (pipeline_ && fmDemodHandler_) {
+                pipeline_->removeHandler(fmDemodHandler_);
+                delete fmDemodHandler_;
+                fmDemodHandler_ = nullptr;
+            }
+            if (fmAudio_) fmAudio_->teardown();
+            if (fmStatusLabel) fmStatusLabel->setText("");
+            return;
+        }
+
+        // FM enabled: if stream is not running, FM will be set up in startStream()
+        if (!pipeline_) return;
+
+        const double tau      = fmDeemphCombo->currentData().toDouble();
+        const double bwHz     = fmBwSpin_->value() * 1000.0;
+        const double offsetHz = fmVfoSpin_
+                                ? (fmVfoSpin_->value() - freqSpinBox->value()) * 1e6
+                                : 0.0;
+
+        delete fmAudio_;
+        fmAudio_ = new FmAudioOutput(this);
+        fmAudio_->setVolume(static_cast<float>(fmVolumeSlider->value()) / 100.0f);
+
+        connect(fmAudio_, &FmAudioOutput::statusChanged, this,
+                [this](const QString& msg, bool isError) {
+                    fmStatusLabel->setStyleSheet(
+                        isError ? "color: #ff4444; font-size: 11px;"
+                                : "color: #00cc44; font-size: 11px;");
+                    fmStatusLabel->setText(msg);
+                    if (isError)
+                        QMessageBox::critical(this, "FM audio", msg);
+                });
+
+        fmStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
+
+        if (fmDemodHandler_) {
+            pipeline_->removeHandler(fmDemodHandler_);
+            delete fmDemodHandler_;
+            fmDemodHandler_ = nullptr;
+        }
+        fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
+        connect(fmDemodHandler_, &FmDemodHandler::audioReady,
+                fmAudio_,        &FmAudioOutput::push,
+                Qt::QueuedConnection);
+        pipeline_->addHandler(fmDemodHandler_);
+
+        fmStatusLabel->setText("FM: waiting for first audio block…");
     });
 
     // Volume → audio sink
@@ -527,80 +519,10 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         }
     });
 
-    // ── FM status + second row with Apply button ──────────────────────────────
-    // Apply allows reconfiguring FM while stream is already running.
-    // If stream is not running, Apply is a no-op — settings are picked up at Start.
+    // ── FM signal level indicator ─────────────────────────────────────────────
     auto* fmRow2  = new QWidget(page);
     auto* fmHlay2 = new QHBoxLayout(fmRow2);
     fmHlay2->setContentsMargins(0, 0, 0, 0);
-
-    applyFmButton_ = new QPushButton("Apply FM", fmRow2);
-    applyFmButton_->setFixedWidth(80);
-    applyFmButton_->setToolTip(
-        "Apply FM settings now.\n"
-        "Works both before Start and while stream is running.\n"
-        "Useful if you forgot to enable FM before pressing Start.");
-
-    connect(applyFmButton_, &QPushButton::clicked, this, [this]() {
-        if (!fmCheckBox->isChecked()) {
-            // Disable FM: remove handler from pipeline, teardown audio
-            if (pipeline_ && fmDemodHandler_) {
-                pipeline_->removeHandler(fmDemodHandler_);
-                delete fmDemodHandler_;
-                fmDemodHandler_ = nullptr;
-            }
-            if (fmAudio_) fmAudio_->teardown();
-            if (fmStatusLabel) fmStatusLabel->setText("");
-            updateFilterBand(false);
-            return;
-        }
-
-        const double tau      = fmDeemphCombo->currentData().toDouble();
-        const double bwHz     = fmBwSpin_->value() * 1000.0;
-        const double offsetHz = fmVfoSpin_
-                                ? (fmVfoSpin_->value() - freqSpinBox->value()) * 1e6
-                                : 0.0;
-
-        LOG_INFO("Apply FM: LO=" + std::to_string(freqSpinBox->value())
-                 + " MHz  VFO=" + std::to_string(fmVfoSpin_ ? fmVfoSpin_->value() : freqSpinBox->value())
-                 + " MHz  offset=" + std::to_string(static_cast<int>(offsetHz))
-                 + " Hz  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
-
-        delete fmAudio_;
-        fmAudio_ = new FmAudioOutput(this);
-        fmAudio_->setVolume(static_cast<float>(fmVolumeSlider->value()) / 100.0f);
-
-        connect(fmAudio_, &FmAudioOutput::statusChanged, this,
-                [this](const QString& msg, bool isError) {
-                    fmStatusLabel->setStyleSheet(
-                        isError ? "color: #ff4444; font-size: 11px;"
-                                : "color: #00cc44; font-size: 11px;");
-                    fmStatusLabel->setText(msg);
-                    if (isError)
-                        QMessageBox::critical(this, "FM audio", msg);
-                });
-
-        fmStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
-        fmStatusLabel->setText("FM: waiting for first audio block…");
-        updateFilterBand(true);
-
-        if (pipeline_) {
-            // Remove existing FM handler if present
-            if (fmDemodHandler_) {
-                pipeline_->removeHandler(fmDemodHandler_);
-                delete fmDemodHandler_;
-                fmDemodHandler_ = nullptr;
-            }
-            // Create new handler with updated parameters (VFO offset)
-            fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
-            connect(fmDemodHandler_, &FmDemodHandler::audioReady,
-                    fmAudio_,        &FmAudioOutput::push,
-                    Qt::QueuedConnection);
-            pipeline_->addHandler(fmDemodHandler_);
-
-            fmStatusLabel->setText("FM: reconfigured, waiting for audio…");
-        }
-    });
 
     fmLevelLabel_ = new QLabel("▯▯▯▯▯▯▯▯▯▯", fmRow2);
     fmLevelLabel_->setStyleSheet("color: gray; font-size: 10px;");
@@ -609,8 +531,6 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
                               "Green = good signal\n"
                               "Red = clipping (reduce gain)");
 
-    fmHlay2->addWidget(applyFmButton_);
-    fmHlay2->addSpacing(8);
     fmHlay2->addWidget(fmLevelLabel_);
     fmHlay2->addStretch();
 
@@ -675,7 +595,10 @@ void DeviceDetailWindow::setupFftPlot() {
     fftPlot->yAxis->setTickLabelColor(Qt::white);
     fftPlot->xAxis->setLabelColor(Qt::white);
     fftPlot->yAxis->setLabelColor(Qt::white);
-    fftPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    // Zoom with scroll wheel (X axis only); no drag — drag causes "snap-back"
+    // because onFftReady calls rescale() every frame.
+    fftPlot->setInteractions(QCP::iRangeZoom);
+    fftPlot->axisRect()->setRangeZoom(Qt::Horizontal);
 
     centerLine_ = new QCPItemLine(fftPlot);
     centerLine_->setPen(QPen(QColor(255, 60, 60), 1.2, Qt::DashLine));
@@ -696,17 +619,26 @@ void DeviceDetailWindow::setupFftPlot() {
     vfoBand_->bottomRight->setCoords(kFreqDefaultMHz + 0.1, -130.0);
     vfoBand_->setVisible(false);
 
+    // X-axis range change (from scroll-wheel zoom):
+    // — clamp so the user can't zoom out beyond the capture band
+    // — track whether the user is zoomed in (skip auto-rescale in onFftReady)
     connect(fftPlot->xAxis, qOverload<const QCPRange&>(&QCPAxis::rangeChanged),
             this, [this](const QCPRange& newRange) {
         if (fftPlot->graph(0)->dataCount() < 2) return;
         const double lo   = fftPlot->graph(0)->data()->begin()->key;
         const double hi   = (fftPlot->graph(0)->data()->end() - 1)->key;
         const double span = hi - lo;
-        if (newRange.size() > span * 1.05) {
+        if (newRange.size() > span * 1.01) {
+            // Zoomed out beyond data — snap back to full band and clear zoom flag
             QSignalBlocker b(fftPlot->xAxis);
-            fftPlot->xAxis->setRange(lo - span * 0.025, hi + span * 0.025);
+            fftPlot->xAxis->setRange(lo, hi);
+            plotUserZoomed_ = false;
+        } else {
+            plotUserZoomed_ = true;
         }
     });
+
+    // Y-axis: clamp to valid dBFS range (zoom in is allowed, zoom out is not)
     connect(fftPlot->yAxis, qOverload<const QCPRange&>(&QCPAxis::rangeChanged),
             this, [this](const QCPRange& newRange) {
         constexpr double yMin = -130.0, yMax = 10.0;
@@ -716,6 +648,19 @@ void DeviceDetailWindow::setupFftPlot() {
                 std::max(newRange.lower, yMin),
                 std::min(newRange.upper, yMax));
         }
+    });
+
+    // Double-click: reset zoom to full capture band
+    connect(fftPlot, &QCustomPlot::mouseDoubleClick, this, [this](QMouseEvent*) {
+        plotUserZoomed_ = false;
+        if (fftPlot->graph(0)->dataCount() >= 2) {
+            QSignalBlocker b(fftPlot->xAxis);
+            fftPlot->xAxis->setRange(
+                fftPlot->graph(0)->data()->begin()->key,
+                (fftPlot->graph(0)->data()->end() - 1)->key);
+        }
+        fftPlot->yAxis->setRange(-120.0, 0.0);
+        fftPlot->replot(QCustomPlot::rpQueuedReplot);
     });
 
     // Click on spectrum → tune VFO to that frequency (FM must be enabled)
@@ -755,9 +700,7 @@ void DeviceDetailWindow::onDeviceInitialized() {
 
     sampleRateSelector->setEnabled(true);
     calibrateButton->setEnabled(true);
-    lnaSlider->setEnabled(true);
-    tiaCombo_->setEnabled(true);
-    pgaSlider->setEnabled(true);
+    gainSlider_->setEnabled(true);
     streamStartButton->setEnabled(true);
 
     refreshCurrentSampleRate();
@@ -904,6 +847,8 @@ void DeviceDetailWindow::startStream() {
     }
     metricsTimer_->start(500);
 
+    plotUserZoomed_ = false;   // new stream may have different LO/SR — reset zoom
+    calibrateButton->setEnabled(false);
     streamStartButton->setEnabled(false);
     streamStopButton->setEnabled(true);
     streamStatusLabel->setStyleSheet("color: #00cc44;");
@@ -991,7 +936,15 @@ void DeviceDetailWindow::onFftReady(FftFrame frame) {
         centerLine_->start->setCoords(mhz, -130.0);
         centerLine_->end->setCoords  (mhz,   10.0);
     }
-    fftPlot->xAxis->rescale();
+
+    // Auto-fit x-axis to capture band only when the user hasn't zoomed in.
+    // QSignalBlocker prevents the rangeChanged handler from seeing this change
+    // (which would otherwise flip plotUserZoomed_ back to true).
+    if (!plotUserZoomed_ && !frame.freqMHz.isEmpty()) {
+        QSignalBlocker b(fftPlot->xAxis);
+        fftPlot->xAxis->setRange(frame.freqMHz.first(), frame.freqMHz.last());
+    }
+
     fftPlot->replot(QCustomPlot::rpQueuedReplot);
 }
 
@@ -1022,6 +975,7 @@ void DeviceDetailWindow::onStreamFinished() {
     for (auto* h : wavHandlers_) delete h;
     wavHandlers_.clear();
 
+    calibrateButton->setEnabled(controller_->isInitialized());
     streamStartButton->setEnabled(controller_->isInitialized());
     streamStopButton->setEnabled(false);
     streamStatusLabel->setStyleSheet("color: gray;");

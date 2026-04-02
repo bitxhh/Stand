@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <sstream>
 #include <thread>
@@ -97,6 +98,49 @@ void LimeDevice::setState(DeviceState s) {
 }
 
 // ---------------------------------------------------------------------------
+// Internal: select RX antenna path for a given LO frequency.
+// LMS_Init does not set an antenna — leaving it at PATH_NONE means the RX
+// input is disconnected and only internal noise is received.
+// ---------------------------------------------------------------------------
+static int antennaForFrequency(double hz) {
+    if (hz < 1.5e9) return LMS_PATH_LNAW;  // 0 – 1.5 GHz: wideband (FM, DAB, ADS-B …)
+    return LMS_PATH_LNAH;                   // > 1.5 GHz: high-band
+}
+
+static const char* antennaName(int path) {
+    switch (path) {
+        case LMS_PATH_LNAH: return "LNAH (>1.5 GHz)";
+        case LMS_PATH_LNAL: return "LNAL (300 MHz–1.5 GHz)";
+        case LMS_PATH_LNAW: return "LNAW (<1.5 GHz wideband)";
+        default:            return "NONE";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LMS_SetLPFBW internally modifies G_TIA_RFE.  ExtIO_LimeSDR works around
+// this by forcing TIA=3 (max) before the call and restoring afterwards.
+// ---------------------------------------------------------------------------
+static void setLpfBwProtected(lms_device_t* h, double bw, int tiaValue) {
+    // Temporarily set TIA to max so LMS_SetLPFBW's internal calibration works
+    LMS_WriteParam(h, LMS7_G_TIA_RFE, 3);
+    if (LMS_SetLPFBW(h, LMS_CH_RX, 0, bw) != 0)
+        LOG_WARN("LMS_SetLPFBW(" + std::to_string(bw) + ") failed");
+    // Restore user TIA
+    LMS_WriteParam(h, LMS7_G_TIA_RFE, tiaValue);
+}
+
+// ---------------------------------------------------------------------------
+// PGA compensation register from LMS7002M datasheet.
+// ExtIO_LimeSDR always writes RCC_CTL_PGA_RBB alongside G_PGA_RBB to keep
+// the PGA baseband filter response correct at every gain setting.
+// ---------------------------------------------------------------------------
+static int rccCtlForPga(int pga) {
+    return static_cast<int>(
+        (430.0 * std::pow(0.65, static_cast<double>(pga) / 10.0) - 110.35)
+        / 20.4516 + 16.0);
+}
+
+// ---------------------------------------------------------------------------
 // IDevice: init
 // ---------------------------------------------------------------------------
 void LimeDevice::init() {
@@ -132,20 +176,36 @@ void LimeDevice::init() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
-    if (LMS_EnableChannel(handle_, LMS_CH_RX, 0, true) != 0)
-        throwLime("LMS_EnableChannel failed");
-
-    if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, currentFrequency_) != 0)
-        throwLime("LMS_SetLOFrequency failed");
+    // ── Init order matches ExtIO_LimeSDR (known-good): ─────────────────────
+    //   SR → channels → antenna → LPF (TIA-protected) → gain → freq → [calibrate later]
 
     if (LMS_SetSampleRate(handle_, currentSampleRate_, 2) != 0)
         throwLime("LMS_SetSampleRate failed");
+
+    // TX must be enabled before RX — LMS_Calibrate uses internal TX→RX loopback.
+    if (LMS_EnableChannel(handle_, LMS_CH_RX, 0, true) != 0)
+        throwLime("LMS_EnableChannel RX failed");
+    if (LMS_EnableChannel(handle_, LMS_CH_TX, 0, true) != 0)
+        throwLime("LMS_EnableChannel TX failed");
+
+    const int antenna = antennaForFrequency(currentFrequency_);
+    if (LMS_SetAntenna(handle_, LMS_CH_RX, 0, antenna) != 0)
+        throwLime("LMS_SetAntenna failed");
+    LOG_INFO("Antenna path: " + std::string(antennaName(antenna))
+             + " for " + std::to_string(currentFrequency_ / 1e6) + " MHz");
+
+    // Analog LPF BW = sample rate (ExtIO default).
+    // LMS_SetLPFBW internally modifies G_TIA_RFE — must protect it.
+    setLpfBwProtected(handle_, currentSampleRate_, kDefaultTia);
+    LOG_INFO("Analog LPF BW set to " + std::to_string(currentSampleRate_) + " Hz");
+
+    if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, currentFrequency_) != 0)
+        throwLime("LMS_SetLOFrequency failed");
 
     // Warm up WinUSB I/O context from the main thread.
     // LMS_SetupStream must be called at least once on the main thread before
     // LMS_StartStream is called from the worker thread — otherwise WinUSB
     // ReadFile requests fail silently (ret=0) on Windows.
-    // startStream() will always teardown+setup to handle SR changes.
     setupStream();
 
     setState(DeviceState::Ready);
@@ -159,6 +219,9 @@ void LimeDevice::calibrate() {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot calibrate — device not initialized");
 
+    // CalBW = max(SR, 2.5M) — matches ExtIO_LimeSDR behaviour.
+    // ExtIO sets CalibrationBandwidth = max(LPFbandwidth, 2.5e6),
+    // and LPF bandwidth = sample rate.
     const double calBw = std::max(currentSampleRate_, 2.5e6);
 
     // LimeSuite LMS_Calibrate can leave the LNA in internal loopback mode
@@ -183,6 +246,9 @@ void LimeDevice::calibrate() {
     if (!ok)
         throwLime("LMS_Calibrate failed");
 
+    // LMS_Calibrate may reset LPF and TIA — restore both (TIA-protected).
+    setLpfBwProtected(handle_, currentSampleRate_, kDefaultTia);
+
     LOG_INFO("Calibration done: " + serial_);
 }
 
@@ -199,8 +265,13 @@ void LimeDevice::setSampleRate(double hz) {
         throwLime("LMS_SetSampleRate failed");
 
     currentSampleRate_ = hz;
+
+    // Analog LPF must track sample rate (ExtIO behaviour).
+    setLpfBwProtected(handle_, hz, kDefaultTia);
+
     emit sampleRateChanged(hz);
-    LOG_INFO("Sample rate set: " + std::to_string(hz) + " Hz");
+    LOG_INFO("Sample rate set: " + std::to_string(hz)
+             + " Hz  LPF=" + std::to_string(hz) + " Hz");
 }
 
 double LimeDevice::sampleRate() const {
@@ -219,6 +290,25 @@ QList<double> LimeDevice::supportedSampleRates() const {
 void LimeDevice::setFrequency(double hz) {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot set frequency — device not initialized");
+
+    const int antenna = antennaForFrequency(hz);
+    const int prevAntenna = antennaForFrequency(currentFrequency_);
+    if (antenna != prevAntenna) {
+        if (LMS_SetAntenna(handle_, LMS_CH_RX, 0, antenna) != 0)
+            throwLime("LMS_SetAntenna failed");
+        LOG_INFO("Antenna path changed: " + std::string(antennaName(antenna))
+                 + " for " + std::to_string(hz / 1e6) + " MHz");
+    }
+
+    if (state_ == DeviceState::Streaming) {
+        // During streaming: don't call LMS_SetLOFrequency from the UI thread —
+        // it would contend with LMS_RecvStream on the same USB handle and freeze
+        // the UI for up to one readBlock timeout. Instead, post the value as a
+        // pending change; readBlock() picks it up and applies it on the worker thread.
+        currentFrequency_ = hz;
+        pendingFrequency_.store(hz);
+        return;
+    }
 
     if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, hz) != 0)
         throwLime("LMS_SetLOFrequency failed");
@@ -242,40 +332,28 @@ void LimeDevice::setGain(double dB) {
     if (LMS_SetGaindB(handle_, LMS_CH_RX, 0, static_cast<unsigned>(dB)) != 0)
         throwLime("LMS_SetGaindB failed");
 
+    // LMS_SetGaindB distributes gain across LNA+PGA but does not write
+    // RCC_CTL_PGA_RBB — the PGA compensation register from the LMS7002M
+    // datasheet.  Without it, PGA baseband filter shape degrades.
+    // Read back the actual PGA value and write the matching RCC.
+    uint16_t pgaVal = 0;
+    LMS_ReadParam(handle_, LMS7_G_PGA_RBB, &pgaVal);
+    const int rcc = rccCtlForPga(static_cast<int>(pgaVal));
+    LMS_WriteParam(handle_, LMS7_RCC_CTL_PGA_RBB, rcc);
+
+    // LMS_SetGaindB may also overwrite TIA — restore to default.
+    LMS_WriteParam(handle_, LMS7_G_TIA_RFE, kDefaultTia);
+
     currentGainDb_ = dB;
-    LOG_INFO("Gain set: " + std::to_string(dB) + " dB on " + serial_);
+    LOG_INFO("Gain set: " + std::to_string(dB) + " dB  PGA=" + std::to_string(pgaVal)
+             + " RCC=" + std::to_string(rcc) + " TIA=" + std::to_string(kDefaultTia)
+             + " on " + serial_);
 }
 
 double LimeDevice::gain() const {
     return currentGainDb_;
 }
 
-// ---------------------------------------------------------------------------
-// LimeSDR-специфично: раздельные ступени LNA / TIA / PGA
-// Используется только внутри LimeAdvancedWidget.
-// ---------------------------------------------------------------------------
-void LimeDevice::setLimeGain(int lna, int tia, int pga) {
-    if (state_ < DeviceState::Ready) return;
-
-    constexpr double kLnaDb[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.5};
-    constexpr double kTiaDb[] = {0.0, 9.0, 12.0};
-
-    lna = std::clamp(lna, 0, 5);
-    tia = std::clamp(tia, 0, 2);
-    pga = std::clamp(pga, 0, 31);
-
-    const double totalDb = kLnaDb[lna] + kTiaDb[tia] + static_cast<double>(pga);
-
-    LOG_DEBUG("setLimeGain: LNA=" + std::to_string(lna)
-              + " TIA=" + std::to_string(tia)
-              + " PGA=" + std::to_string(pga)
-              + " total=" + std::to_string(totalDb) + " dB");
-
-    if (LMS_SetGaindB(handle_, LMS_CH_RX, 0, static_cast<unsigned>(totalDb)) != 0)
-        throwLime("LMS_SetGaindB failed");
-
-    currentGainDb_ = totalDb;
-}
 
 // ---------------------------------------------------------------------------
 // IDevice: стрим
@@ -283,8 +361,12 @@ void LimeDevice::setLimeGain(int lna, int tia, int pga) {
 void LimeDevice::setupStream() {
     if (streamReady_) teardownStream();
 
+    // Re-enable TX then RX — LMS_Calibrate resets parts of the RF chain.
+    if (LMS_EnableChannel(handle_, LMS_CH_TX, 0, true) != 0)
+        throwLime("LMS_EnableChannel TX (pre-stream) failed");
+
     if (LMS_EnableChannel(handle_, LMS_CH_RX, 0, true) != 0)
-        throwLime("LMS_EnableChannel (pre-stream) failed");
+        throwLime("LMS_EnableChannel RX (pre-stream) failed");
 
     streamId_                     = {};
     streamId_.channel             = 0;
@@ -333,96 +415,23 @@ void LimeDevice::stopStream() {
 }
 
 int LimeDevice::readBlock(int16_t* buffer, int count, int timeoutMs) {
+    // Apply pending LO frequency change on the worker thread — safe because this
+    // is the same thread that owns the LMS_RecvStream call, so no USB contention.
+    const double freq = pendingFrequency_.exchange(kNoFreqPending);
+    if (freq != kNoFreqPending) {
+        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, freq) != 0)
+            LOG_WARN("LMS_SetLOFrequency (deferred) failed: " + serial_);
+        else
+            LOG_DEBUG("LO updated to " + std::to_string(freq / 1e6) + " MHz");
+    }
+
     return LMS_RecvStream(&streamId_, buffer, count, nullptr, timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
-// createAdvancedWidget — LNA / TIA / PGA controls
+// createAdvancedWidget — зарезервировано для Пути B (прямое управление
+// LNA/TIA/PGA через LMS_WriteParam). Пока возвращает nullptr.
 // ---------------------------------------------------------------------------
-QWidget* LimeDevice::createAdvancedWidget(QWidget* parent) {
-    auto* w      = new QWidget(parent);
-    auto* layout = new QVBoxLayout(w);
-    layout->setContentsMargins(0, 0, 0, 0);
-
-    auto* title = new QLabel("LimeSDR gain stages", w);
-    title->setStyleSheet("font-weight: 600;");
-    layout->addWidget(title);
-
-    auto* hint = new QLabel("LNA → TIA → PGA  (max ~68.5 dB total)", w);
-    hint->setStyleSheet("color: gray; font-size: 10px;");
-    layout->addWidget(hint);
-
-    // ── LNA ──────────────────────────────────────────────────────────────────
-    auto* lnaRow = new QWidget(w);
-    auto* lnaH   = new QHBoxLayout(lnaRow);
-    lnaH->setContentsMargins(0, 0, 0, 0);
-    auto* lnaLbl = new QLabel("LNA:", lnaRow);
-    lnaLbl->setFixedWidth(36);
-    lnaLbl->setToolTip("0/5/10/15/20/25.5 dB");
-    auto* lnaSlider = new QSlider(Qt::Horizontal, lnaRow);
-    lnaSlider->setRange(0, 5);
-    lnaSlider->setValue(0);
-    auto* lnaValLbl = new QLabel("0.0 dB", lnaRow);
-    lnaValLbl->setFixedWidth(52);
-    lnaH->addWidget(lnaLbl);
-    lnaH->addWidget(lnaSlider);
-    lnaH->addWidget(lnaValLbl);
-    layout->addWidget(lnaRow);
-
-    // ── TIA ──────────────────────────────────────────────────────────────────
-    auto* tiaRow = new QWidget(w);
-    auto* tiaH   = new QHBoxLayout(tiaRow);
-    tiaH->setContentsMargins(0, 0, 0, 0);
-    auto* tiaLbl = new QLabel("TIA:", tiaRow);
-    tiaLbl->setFixedWidth(36);
-    tiaLbl->setToolTip("0/9/12 dB");
-    auto* tiaCombo = new QComboBox(tiaRow);
-    tiaCombo->addItem("0 dB",  0);
-    tiaCombo->addItem("9 dB",  1);
-    tiaCombo->addItem("12 dB", 2);
-    tiaH->addWidget(tiaLbl);
-    tiaH->addWidget(tiaCombo);
-    tiaH->addStretch();
-    layout->addWidget(tiaRow);
-
-    // ── PGA ──────────────────────────────────────────────────────────────────
-    auto* pgaRow = new QWidget(w);
-    auto* pgaH   = new QHBoxLayout(pgaRow);
-    pgaH->setContentsMargins(0, 0, 0, 0);
-    auto* pgaLbl = new QLabel("PGA:", pgaRow);
-    pgaLbl->setFixedWidth(36);
-    pgaLbl->setToolTip("0–31 dB (1 dB/шаг)");
-    auto* pgaSlider = new QSlider(Qt::Horizontal, pgaRow);
-    pgaSlider->setRange(0, 31);
-    pgaSlider->setValue(0);
-    auto* pgaValLbl = new QLabel("0 dB", pgaRow);
-    pgaValLbl->setFixedWidth(52);
-    pgaH->addWidget(pgaLbl);
-    pgaH->addWidget(pgaSlider);
-    pgaH->addWidget(pgaValLbl);
-    layout->addWidget(pgaRow);
-
-    layout->addStretch();
-
-    // ── Wiring ───────────────────────────────────────────────────────────────
-    constexpr double lnaDb[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.5};
-
-    QObject::connect(lnaSlider, &QSlider::valueChanged, lnaValLbl, [=](int v) {
-        lnaValLbl->setText(QString("%1 dB").arg(lnaDb[v], 0, 'f', 1));
-    });
-    QObject::connect(pgaSlider, &QSlider::valueChanged, pgaValLbl, [=](int v) {
-        pgaValLbl->setText(QString("%1 dB").arg(v));
-    });
-
-    // Применяем при отпускании слайдера или смене TIA
-    auto apply = [this, lnaSlider, tiaCombo, pgaSlider]() {
-        setLimeGain(lnaSlider->value(),
-                    tiaCombo->currentData().toInt(),
-                    pgaSlider->value());
-    };
-    QObject::connect(lnaSlider, &QSlider::sliderReleased, w, apply);
-    QObject::connect(pgaSlider, &QSlider::sliderReleased, w, apply);
-    QObject::connect(tiaCombo, &QComboBox::currentIndexChanged, w, apply);
-
-    return w;
+QWidget* LimeDevice::createAdvancedWidget(QWidget* /*parent*/) {
+    return nullptr;
 }

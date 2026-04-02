@@ -93,11 +93,8 @@ private:
     QLabel*      controlStatusLabel{nullptr};
     QComboBox*   sampleRateSelector{nullptr};
     QPushButton* calibrateButton{nullptr};
-    QSlider*     lnaSlider{nullptr};
-    QComboBox*   tiaCombo_{nullptr};
-    QSlider*     pgaSlider{nullptr};
-    QLabel*      lnaValueLabel{nullptr};
-    QLabel*      pgaValueLabel{nullptr};
+    QSlider*     gainSlider_{nullptr};
+    QLabel*      gainValueLabel_{nullptr};
 
     // ── FFT page ──────────────────────────────────────────────────────────────
     QCustomPlot*    fftPlot{nullptr};
@@ -127,7 +124,6 @@ private:
     QLabel*         fmVolumeLabel{nullptr};
     QLabel*         fmStatusLabel{nullptr};
     QLabel*         fmLevelLabel_{nullptr};
-    QPushButton*    applyFmButton_{nullptr};
 
     FmAudioOutput*  fmAudio_{nullptr};
 
@@ -144,6 +140,11 @@ private:
     // Non-QObject handlers — owned by DeviceDetailWindow, deleted in teardownStream
     std::vector<RawFileHandler*>     rawHandlers_;
     std::vector<BandpassHandler*>    wavHandlers_;
+
+    // ── Plot zoom state ───────────────────────────────────────────────────────
+    // True when the user has scrolled in — onFftReady skips rescale to keep zoom.
+    // Reset by double-click or by zooming back out to the full capture band.
+    bool plotUserZoomed_{false};
 
     // ── Metrics ───────────────────────────────────────────────────────────────
     QTimer* metricsTimer_{nullptr};

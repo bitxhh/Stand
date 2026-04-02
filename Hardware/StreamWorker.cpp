@@ -39,7 +39,9 @@ void StreamWorker::run() {
 
     // Основной цикл
     while (running_.load()) {
-        const int n = device_->readBlock(buffer_.data(), kBlockSize, 1000);
+        // 100 ms timeout — keeps LMS_RecvStream from holding the device mutex
+        // too long and blocking main-thread calls (e.g. LMS_SetLOFrequency).
+        const int n = device_->readBlock(buffer_.data(), kBlockSize, 100);
 
         if (diagCount < 10) {
             LOG_DEBUG("readBlock[" + std::to_string(diagCount) + "] = " + std::to_string(n));

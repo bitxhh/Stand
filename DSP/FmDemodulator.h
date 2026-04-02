@@ -10,17 +10,29 @@
 //
 // DSP chain (all in double precision, float32 output):
 //
-//   int16 I/Q  →  DC blocker  →  NCO freq-shift  →  FIR1 LPF (31/127 taps, complex)
-//              →  decimate D1  →  IF @ ~250 kHz
+//   int16 I/Q  →  DC blocker  →  NCO freq-shift  →  FIR1 LPF (31/255 taps, complex)
+//              →  decimate D1  →  IF @ ~500 kHz
 //              →  FM discriminator (atan2 of conjugate product)
-//              →  de-emphasis IIR (first-order, τ = 75 µs EU / 50 µs US)
-//              →  FIR2 LPF (63 taps, real, cutoff 15 kHz)
-//              →  decimate D2 = 5  →  audio @ ~50 kHz
+//              →  de-emphasis IIR (first-order, τ = 50 µs EU / 75 µs US)
+//              →  FIR2 LPF (255 taps, real, cutoff 15 kHz)
+//              →  decimate D2 = 10  →  audio @ ~50 kHz
 //              →  QVector<float> (normalised, volume applied externally)
 //
-// Audio sample rate = inputSR / (D1 * 5).  D1 = round(inputSR / 250 000).
-// For the standard LimeSDR SR set {2, 4, 8, 10, 15, 20, 25, 30} MHz,
-// the IF is always exactly 250 kHz and audio is always exactly 50 kHz.
+// Audio sample rate = inputSR / (D1 * 10).  D1 = round(inputSR / 500 000).
+// For the standard LimeSDR SR set {2.5, 4, 5, 8, 10, 15, 20} MHz,
+// the IF is always exactly 500 kHz and audio is always exactly 50 kHz.
+//
+// Why 500 kHz IF (not 250 kHz):
+//   FIR1 must anti-alias D1 decimation.  Transition band = (IF/2 - BW) / inputSR.
+//   At 250 kHz IF: transition = 25 kHz / inputSR → needs ~1000 taps (impractical).
+//   At 500 kHz IF: transition = 100 kHz / inputSR → ~255 taps give ~-55 dB at Nyquist.
+//   Wider transition = much better adjacent-channel rejection.
+//
+// Why 255-tap FIR2 (not 63):
+//   FM multiplex after discriminator contains stereo subcarrier at 23–53 kHz.
+//   With D2=10 output at 50 kHz, content at 35–50 kHz folds into 0–15 kHz (audio).
+//   63 taps: stopband starts at ~41 kHz — stereo bleeds into audio.
+//   255 taps: stopband starts at ~21 kHz — stereo fully rejected before decimation.
 //
 // Usage (inside StreamWorker::run):
 //   FmDemodulator dem(inputSR, stationOffsetHz);
@@ -38,11 +50,11 @@ public:
     // stationOffsetHz   — target station offset from LO, same sign convention
     //                     as BandpassExporter:
     //                     centre = 102 MHz, station = 104 MHz → offset = +2e6
-    // deemphTauSec      — 75e-6 (Europe, default) or 50e-6 (USA / Japan)
+    // deemphTauSec      — 50e-6 (Europe / Russia, default) or 75e-6 (USA / Japan)
     explicit FmDemodulator(double inputSampleRateHz,
                            double stationOffsetHz,
-                           double deemphTauSec    = 75e-6,
-                           double bandwidthHz     = 100'000.0);
+                           double deemphTauSec    = 50e-6,
+                           double bandwidthHz     = 150'000.0);
 
     // Process one raw I/Q block.
     [[nodiscard]] QVector<float> pushBlock(const QVector<int16_t>& iqBlock);
@@ -83,7 +95,7 @@ private:
 
     int    D1_;       // stage-1: inputSR  → ~250 kHz IF
     double ifSR_;
-    int    D2_{5};    // stage-2: ~250 kHz → ~50 kHz audio (fixed)
+    int    D2_{10};   // stage-2: ~500 kHz → ~50 kHz audio (fixed)
     double audioSR_;
 
     // ── DC blocker — high-pass IIR before NCO ────────────────────────────────
@@ -140,6 +152,7 @@ private:
     int                 fir2Head_{0};
     int                 dec2Counter_{0};
 
-    std::complex<double> fir1Step(std::complex<double> x);
+    void                 fir1Push(std::complex<double> x);
+    std::complex<double> fir1Compute() const;
     double               fir2Step(double x);
 };

@@ -69,8 +69,14 @@ void Device::init_device() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
+    // TX channel must be enabled before RX — LMS_Calibrate uses an internal
+    // TX→RX loopback; without it calibration misbehaves at high gain (MCU error 5).
+    // Both official LimeSuite examples (basicRX, singleRX) do this, comment: "Fix for v2".
+    if (LMS_EnableChannel(device, LMS_CH_TX, 0, true) != 0)
+        throwLimeError("LMS_EnableChannel TX failed");
+
     if (LMS_EnableChannel(device, LMS_CH_RX, 0, true) != 0)
-        throwLimeError("LMS_EnableChannel failed");
+        throwLimeError("LMS_EnableChannel RX failed");
 
     if (LMS_SetLOFrequency(device, LMS_CH_RX, 0, 102e6) != 0)
         throwLimeError("LMS_SetLOFrequency failed");
@@ -94,10 +100,12 @@ void Device::setup_stream() {
     LOG_DEBUG("Setting up RX stream for: " + serial);
 
     // LMS_Calibrate internally resets parts of the RF chain.
-    // Re-enable the channel here to guarantee it is active before SetupStream,
-    // regardless of what happened between init_device() and now.
+    // Re-enable TX then RX to restore the known-good state before SetupStream.
+    if (LMS_EnableChannel(device, LMS_CH_TX, 0, true) != 0)
+        throwLimeError("LMS_EnableChannel TX (pre-stream) failed");
+
     if (LMS_EnableChannel(device, LMS_CH_RX, 0, true) != 0)
-        throwLimeError("LMS_EnableChannel (pre-stream) failed");
+        throwLimeError("LMS_EnableChannel RX (pre-stream) failed");
 
     streamId                      = {};
     streamId.channel              = 0;

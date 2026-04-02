@@ -4,6 +4,7 @@
 #include "lime/LimeSuite.h"
 
 #include <atomic>
+#include <limits>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -59,15 +60,9 @@ public:
     // ── IDevice: состояние ────────────────────────────────────────────────────
     [[nodiscard]] DeviceState state() const override { return state_; }
 
-    // ── IDevice: аппаратно-специфичный виджет (LNA / TIA / PGA) ──────────────
+    // ── IDevice: аппаратно-специфичный виджет ────────────────────────────────
+    // Зарезервировано для Пути B (LNA/TIA/PGA через WriteParam). Сейчас nullptr.
     QWidget* createAdvancedWidget(QWidget* parent) override;
-
-    // ── LimeSDR-специфичное: прямое управление ступенями усиления ─────────────
-    // Используется только внутри LimeAdvancedWidget, возвращаемого createAdvancedWidget().
-    // lna : 0–5  (0/5/10/15/20/25.5 dB)
-    // tia : 0–2  (0/9/12 dB)
-    // pga : 0–31 (0–31 dB, 1 dB/шаг)
-    void setLimeGain(int lna, int tia, int pga);
 
     static const QList<double> kSupportedRates;
 
@@ -87,9 +82,20 @@ private:
     double            currentFrequency_ {102e6};
     double            currentGainDb_    {0.0};
 
+    // Pending LO frequency — set from UI thread, applied in readBlock() on worker thread.
+    // Avoids calling LMS_SetLOFrequency from main thread while LMS_RecvStream runs.
+    // Sentinel kNoFreqPending means no pending change.
+    static constexpr double kNoFreqPending = -1.0;
+    std::atomic<double> pendingFrequency_{kNoFreqPending};
+
     DeviceState       state_{DeviceState::Connected};
     lms_stream_t      streamId_{};
     bool              streamReady_{false};
 
     static constexpr double kMaxGainDb = 68.5;
+
+    // Default TIA register value.  ExtIO_LimeSDR uses G_TIA_RFE=3 (max gain).
+    // Must be restored after any call that may reset it (LMS_SetLPFBW,
+    // LMS_Calibrate, LMS_SetGaindB).
+    static constexpr int kDefaultTia = 3;
 };

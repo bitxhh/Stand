@@ -31,8 +31,7 @@ public slots:
 
     void setSampleRate(double sampleRateHz);
 
-    // lna: 0-5, tia: 0-2, pga: 0-31 — суммируются в dB → IDevice::setGain()
-    void setGain(int lna, int tia, int pga);
+    void setGain(double dB);   // 0–68.5 dB → IDevice::setGain()
 
     // freqMHz — значение из спинбокса (30..3800 МГц)
     void setFrequency(double freqMHz);

@@ -43,26 +43,10 @@ void DeviceController::setSampleRate(double sampleRateHz) {
     }
 }
 
-void DeviceController::setGain(int lna, int tia, int pga) {
-    static constexpr double kLnaDb[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.5};
-    static constexpr double kTiaDb[] = {0.0, 9.0, 12.0};
-
-    const double lnaDb  = kLnaDb[std::clamp(lna, 0, 5)];
-    const double tiaDb  = kTiaDb[std::clamp(tia, 0, 2)];
-    const double pgaDb  = static_cast<double>(std::clamp(pga, 0, 31));
-    const double totalDb = lnaDb + tiaDb + pgaDb;
-
-    LOG_DEBUG("setGain: LNA=" + std::to_string(lna) + " TIA=" + std::to_string(tia)
-              + " PGA=" + std::to_string(pga) + " total=" + std::to_string(totalDb) + " dB");
-
+void DeviceController::setGain(double dB) {
     try {
-        device_->setGain(totalDb);
-        emit statusChanged(
-            QString("Gain: %1 dB  (LNA %2 + TIA %3 + PGA %4)")
-                .arg(totalDb, 0, 'f', 1)
-                .arg(lnaDb,   0, 'f', 1)
-                .arg(tiaDb,   0, 'f', 1)
-                .arg(pgaDb,   0, 'f', 0));
+        device_->setGain(dB);
+        emit statusChanged(QString("Gain: %1 dB").arg(dB, 0, 'f', 1));
     } catch (const std::exception& ex) {
         emit errorOccurred(QString::fromStdString(ex.what()));
     }

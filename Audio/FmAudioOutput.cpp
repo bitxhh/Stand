@@ -61,7 +61,7 @@ void FmAudioOutput::teardown() {
     outRate_       = 48'000;
     outIsFloat_    = true;
     diagCount_     = 0;
-    agcGain_       = 10.0f;
+    agcGain_       = 1.0f;
     resampler_.reset();
     statusText_.clear();
     emit statusChanged(QString(), false);

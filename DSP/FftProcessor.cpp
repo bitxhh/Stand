@@ -117,7 +117,13 @@ FftFrame FftProcessor::process(const QVector<int16_t>& iqSamples,
 
     const double binWidthHz   = sampleRateHz / static_cast<double>(fftSize);
     const double startFreqMHz = centerFreqMHz - (sampleRateHz / 2.0) / 1e6;
-    const double normSq       = static_cast<double>(fftSize);
+
+    // Coherent normalization: divide by sum(window)^2 so that a full-scale
+    // complex sine reads 0 dBFS regardless of FFT size or window shape.
+    // sum(Hann) ≈ N/2, so this corrects the +36 dB offset from dividing by N.
+    double winSum = 0.0;
+    for (double w : window) winSum += w;
+    const double normSq = winSum * winSum;
 
     for (int k = 0; k < fftSize; ++k) {
         // FFT-shift: map output bin index to "DC-centred" display index
