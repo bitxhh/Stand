@@ -176,6 +176,17 @@ void LimeDevice::init() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
+    // ── Log hardware capabilities ────────────────────────────────────────────
+    lms_range_t loRange{};
+    if (LMS_GetLOFrequencyRange(handle_, LMS_CH_RX, &loRange) == 0)
+        LOG_INFO("LO range: " + std::to_string(loRange.min / 1e6) + " – "
+                 + std::to_string(loRange.max / 1e6) + " MHz");
+
+    lms_range_t lpfRange{};
+    if (LMS_GetLPFBWRange(handle_, LMS_CH_RX, &lpfRange) == 0)
+        LOG_INFO("LPF BW range: " + std::to_string(lpfRange.min / 1e6) + " – "
+                 + std::to_string(lpfRange.max / 1e6) + " MHz");
+
     // ── Init order matches ExtIO_LimeSDR (known-good): ─────────────────────
     //   SR → channels → antenna → LPF (TIA-protected) → gain → freq → [calibrate later]
 
@@ -313,6 +324,14 @@ void LimeDevice::setFrequency(double hz) {
     if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, hz) != 0)
         throwLime("LMS_SetLOFrequency failed");
 
+    // Readback actual LO — PLL may not lock at requested frequency
+    float_type actualLo = 0;
+    if (LMS_GetLOFrequency(handle_, LMS_CH_RX, 0, &actualLo) == 0
+        && std::abs(actualLo - hz) > 1e3) {
+        LOG_WARN("LO mismatch: requested " + std::to_string(hz / 1e6)
+                 + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
+    }
+
     currentFrequency_ = hz;
 }
 
@@ -419,10 +438,17 @@ int LimeDevice::readBlock(int16_t* buffer, int count, int timeoutMs) {
     // is the same thread that owns the LMS_RecvStream call, so no USB contention.
     const double freq = pendingFrequency_.exchange(kNoFreqPending);
     if (freq != kNoFreqPending) {
-        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, freq) != 0)
+        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, freq) != 0) {
             LOG_WARN("LMS_SetLOFrequency (deferred) failed: " + serial_);
-        else
-            LOG_DEBUG("LO updated to " + std::to_string(freq / 1e6) + " MHz");
+        } else {
+            float_type actualLo = 0;
+            LMS_GetLOFrequency(handle_, LMS_CH_RX, 0, &actualLo);
+            if (std::abs(actualLo - freq) > 1e3)
+                LOG_WARN("LO mismatch (deferred): requested " + std::to_string(freq / 1e6)
+                         + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
+            else
+                LOG_DEBUG("LO updated to " + std::to_string(freq / 1e6) + " MHz");
+        }
     }
 
     return LMS_RecvStream(&streamId_, buffer, count, nullptr, timeoutMs);
