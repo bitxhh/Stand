@@ -261,278 +261,185 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     connect(freqSpinBox,  &QDoubleSpinBox::editingFinished, this, applyFreq);
     connect(applyFreqBtn, &QPushButton::clicked,            this, applyFreq);
 
-    // ── Record to file ────────────────────────────────────────────────────────
+    // ── Recording controls (compact) ─────────────────────────────────────────
+    // Default paths
+    recordPath_ = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation)
+                  + "/capture_iq_i16.raw";
+    wavPath_    = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation)
+                  + "/station_iq.wav";
+
     auto* recordRow  = new QWidget(page);
     auto* recordHlay = new QHBoxLayout(recordRow);
     recordHlay->setContentsMargins(0, 0, 0, 0);
 
-    recordCheckBox = new QCheckBox("Record raw .raw", recordRow);
-    recordPathEdit = new QLineEdit(
-        QStandardPaths::writableLocation(QStandardPaths::DesktopLocation)
-            + "/capture_iq_i16.raw", recordRow);
-    recordPathEdit->setEnabled(false);
-    auto* browseBtn = new QPushButton("...", recordRow);
-    browseBtn->setFixedWidth(30);
+    recordCheckBox = new QCheckBox("Record raw", recordRow);
+    recordCheckBox->setToolTip("Record raw I/Q int16 samples to .raw file");
 
-    connect(recordCheckBox, &QCheckBox::toggled, recordPathEdit, &QLineEdit::setEnabled);
-    connect(browseBtn, &QPushButton::clicked, this, [this]() {
-        const QString path = QFileDialog::getSaveFileName(
-            this, "Save IQ capture", recordPathEdit->text(),
-            "Raw IQ (*.raw);;All files (*)");
-        if (!path.isEmpty()) recordPathEdit->setText(path);
-    });
+    wavCheckBox = new QCheckBox("Export WAV", recordRow);
+    wavCheckBox->setToolTip("Export filtered I/Q to .wav file");
+
+    auto* recSettingsBtn = new QPushButton("Settings\u2026", recordRow);
+    recSettingsBtn->setFixedWidth(80);
+    connect(recSettingsBtn, &QPushButton::clicked, this, &DeviceDetailWindow::openRecordSettings);
 
     recordHlay->addWidget(recordCheckBox);
-    recordHlay->addWidget(recordPathEdit, 1);
-    recordHlay->addWidget(browseBtn);
+    recordHlay->addSpacing(12);
+    recordHlay->addWidget(wavCheckBox);
+    recordHlay->addSpacing(12);
+    recordHlay->addWidget(recSettingsBtn);
+    recordHlay->addStretch();
 
-    // ── Bandpass WAV export ───────────────────────────────────────────────────
-    auto* wavRow  = new QWidget(page);
-    auto* wavHlay = new QHBoxLayout(wavRow);
-    wavHlay->setContentsMargins(0, 0, 0, 0);
+    // ── Demodulator mode selector ───────────────────────────────────────────
+    auto* demodRow  = new QWidget(page);
+    auto* demodHlay = new QHBoxLayout(demodRow);
+    demodHlay->setContentsMargins(0, 0, 0, 0);
 
-    wavCheckBox = new QCheckBox("Export filtered .wav", wavRow);
+    auto* modeLabel = new QLabel("Mode:", demodRow);
+    modeCombo_ = new QComboBox(demodRow);
+    modeCombo_->addItem("Off",  0);
+    modeCombo_->addItem("FM",   1);
+    modeCombo_->addItem("AM",   2);
+    modeCombo_->setFixedWidth(60);
 
-    auto* wOffsetLabel = new QLabel("Offset (Hz):", wavRow);
-    wavOffsetSpin = new QDoubleSpinBox(wavRow);
-    wavOffsetSpin->setRange(-15e6, 15e6);
-    wavOffsetSpin->setDecimals(0);
-    wavOffsetSpin->setSingleStep(100'000.0);
-    wavOffsetSpin->setValue(0.0);
-    wavOffsetSpin->setFixedWidth(100);
-    wavOffsetSpin->setEnabled(false);
-    wavOffsetSpin->setToolTip(
-        "Station offset from LO (Hz). E.g. LO=102 MHz, station=104 MHz → +2 000 000");
-
-    auto* wBwLabel = new QLabel("BW (Hz):", wavRow);
-    wavBwSpin = new QDoubleSpinBox(wavRow);
-    wavBwSpin->setRange(10'000.0, 500'000.0);
-    wavBwSpin->setDecimals(0);
-    wavBwSpin->setSingleStep(10'000.0);
-    wavBwSpin->setValue(100'000.0);
-    wavBwSpin->setFixedWidth(90);
-    wavBwSpin->setEnabled(false);
-
-    wavPathEdit = new QLineEdit(
-        QStandardPaths::writableLocation(QStandardPaths::DesktopLocation)
-            + "/station_iq.wav", wavRow);
-    wavPathEdit->setEnabled(false);
-    auto* wavBrowseBtn = new QPushButton("...", wavRow);
-    wavBrowseBtn->setFixedWidth(30);
-    wavBrowseBtn->setEnabled(false);
-
-    connect(wavCheckBox, &QCheckBox::toggled, this, [this, wavBrowseBtn](bool on) {
-        wavOffsetSpin->setEnabled(on);
-        wavBwSpin->setEnabled(on);
-        wavPathEdit->setEnabled(on);
-        wavBrowseBtn->setEnabled(on);
-    });
-    connect(wavBrowseBtn, &QPushButton::clicked, this, [this]() {
-        const QString path = QFileDialog::getSaveFileName(
-            this, "Save filtered WAV", wavPathEdit->text(),
-            "WAV (*.wav);;All files (*)");
-        if (!path.isEmpty()) wavPathEdit->setText(path);
-    });
-
-    wavHlay->addWidget(wavCheckBox);
-    wavHlay->addWidget(wOffsetLabel);
-    wavHlay->addWidget(wavOffsetSpin);
-    wavHlay->addWidget(wBwLabel);
-    wavHlay->addWidget(wavBwSpin);
-    wavHlay->addWidget(wavPathEdit, 1);
-    wavHlay->addWidget(wavBrowseBtn);
-
-    // ── FM Radio ──────────────────────────────────────────────────────────────
-    // Simplified model: offset is always 0 — tune LO directly to the station.
-    // Only user parameter: filter bandwidth (BW).
-    // The filter band is shown on the spectrum centered on the LO (red line).
-    auto* fmRow  = new QWidget(page);
-    auto* fmHlay = new QHBoxLayout(fmRow);
-    fmHlay->setContentsMargins(0, 0, 0, 0);
-
-    fmCheckBox = new QCheckBox("FM Radio", fmRow);
-    fmCheckBox->setToolTip(
-        "Demodulate and play the station at the current center frequency.\n"
-        "Tune the LO (Center freq) directly to the station frequency.\n"
-        "Adjust BW to match the station's broadcast bandwidth.");
-
-    // Filter bandwidth — the only FM-specific parameter
-    auto* fmBwLabel = new QLabel("BW (kHz):", fmRow);
-    fmBwSpin_ = new QDoubleSpinBox(fmRow);
+    // FM-specific controls
+    fmBwLabel_ = new QLabel("BW (kHz):", demodRow);
+    fmBwSpin_ = new QDoubleSpinBox(demodRow);
     fmBwSpin_->setRange(50.0, 250.0);
     fmBwSpin_->setDecimals(0);
     fmBwSpin_->setSingleStep(10.0);
     fmBwSpin_->setValue(100.0);
     fmBwSpin_->setFixedWidth(70);
-    fmBwSpin_->setEnabled(false);
-    fmBwSpin_->setToolTip(
-        "One-sided filter bandwidth (kHz).\n"
-        "WBFM broadcast: 100–150 kHz\n"
-        "Narrower = less noise but may cut audio highs.");
+    fmBwSpin_->setToolTip("One-sided filter bandwidth (kHz).\n"
+                          "WBFM broadcast: 100-150 kHz");
 
-    // De-emphasis
-    auto* fmDeemphLabel = new QLabel("De-emph:", fmRow);
-    fmDeemphCombo = new QComboBox(fmRow);
+    fmDeemphLabel_ = new QLabel("De-emph:", demodRow);
+    fmDeemphCombo = new QComboBox(demodRow);
     fmDeemphCombo->addItem("EU  50 µs", 50e-6);
     fmDeemphCombo->addItem("US  75 µs", 75e-6);
-    fmDeemphCombo->setEnabled(false);
-    fmDeemphCombo->setToolTip("Europe / Russia / most of the world: 50 µs\nUSA, Canada, Japan: 75 µs");
+    fmDeemphCombo->setToolTip("Europe / Russia: 50 µs\nUSA, Canada, Japan: 75 µs");
 
-    // Volume
-    auto* fmVolLabel = new QLabel("Vol:", fmRow);
-    fmVolumeSlider = new QSlider(Qt::Horizontal, fmRow);
-    fmVolumeSlider->setRange(0, 100);
-    fmVolumeSlider->setValue(80);
-    fmVolumeSlider->setFixedWidth(80);
-    fmVolumeSlider->setEnabled(false);
-    fmVolumeLabel = new QLabel("80%", fmRow);
-    fmVolumeLabel->setFixedWidth(34);
+    // AM-specific controls
+    amBwLabel_ = new QLabel("BW (kHz):", demodRow);
+    amBwSpin_ = new QDoubleSpinBox(demodRow);
+    amBwSpin_->setRange(1.0, 20.0);
+    amBwSpin_->setDecimals(1);
+    amBwSpin_->setSingleStep(1.0);
+    amBwSpin_->setValue(5.0);
+    amBwSpin_->setFixedWidth(70);
+    amBwSpin_->setToolTip("Audio bandwidth (kHz).\n"
+                          "AM broadcast: 4-5 kHz\n"
+                          "SSB / amateur: 2-3 kHz");
 
-    // Enable/disable controls and start/stop FM demodulator immediately.
-    connect(fmCheckBox, &QCheckBox::toggled, this, [this](bool on) {
-        fmBwSpin_->setEnabled(on);
-        fmDeemphCombo->setEnabled(on);
-        fmVolumeSlider->setEnabled(on);
-        if (fmVfoSpin_) fmVfoSpin_->setEnabled(on);
-        updateFilterBand(on);
+    // Shared volume control
+    auto* volLabel = new QLabel("Vol:", demodRow);
+    demodVolSlider_ = new QSlider(Qt::Horizontal, demodRow);
+    demodVolSlider_->setRange(0, 100);
+    demodVolSlider_->setValue(80);
+    demodVolSlider_->setFixedWidth(80);
+    demodVolLabel_ = new QLabel("80%", demodRow);
+    demodVolLabel_->setFixedWidth(34);
 
-        if (!on) {
-            // FM disabled: remove handler from the running pipeline (if any)
-            if (pipeline_ && fmDemodHandler_) {
-                pipeline_->removeHandler(fmDemodHandler_);
-                delete fmDemodHandler_;
-                fmDemodHandler_ = nullptr;
-            }
-            if (fmAudio_) fmAudio_->teardown();
-            if (fmStatusLabel) fmStatusLabel->setText("");
-            return;
-        }
+    demodHlay->addWidget(modeLabel);
+    demodHlay->addWidget(modeCombo_);
+    demodHlay->addSpacing(8);
+    demodHlay->addWidget(fmBwLabel_);
+    demodHlay->addWidget(fmBwSpin_);
+    demodHlay->addWidget(fmDeemphLabel_);
+    demodHlay->addWidget(fmDeemphCombo);
+    demodHlay->addWidget(amBwLabel_);
+    demodHlay->addWidget(amBwSpin_);
+    demodHlay->addSpacing(8);
+    demodHlay->addWidget(volLabel);
+    demodHlay->addWidget(demodVolSlider_);
+    demodHlay->addWidget(demodVolLabel_);
+    demodHlay->addStretch();
 
-        // FM enabled: if stream is not running, FM will be set up in startStream()
-        if (!pipeline_) return;
+    // Initially hide all mode-specific + shared controls (mode = Off)
+    fmBwLabel_->hide();    fmBwSpin_->hide();
+    fmDeemphLabel_->hide(); fmDeemphCombo->hide();
+    amBwLabel_->hide();    amBwSpin_->hide();
+    volLabel->hide();
+    demodVolSlider_->hide(); demodVolLabel_->hide();
 
-        const double tau      = fmDeemphCombo->currentData().toDouble();
-        const double bwHz     = fmBwSpin_->value() * 1000.0;
-        const double offsetHz = fmVfoSpin_
-                                ? (fmVfoSpin_->value() - freqSpinBox->value()) * 1e6
-                                : 0.0;
-
-        delete fmAudio_;
-        fmAudio_ = new FmAudioOutput(this);
-        fmAudio_->setVolume(static_cast<float>(fmVolumeSlider->value()) / 100.0f);
-
-        connect(fmAudio_, &FmAudioOutput::statusChanged, this,
-                [this](const QString& msg, bool isError) {
-                    fmStatusLabel->setStyleSheet(
-                        isError ? "color: #ff4444; font-size: 11px;"
-                                : "color: #00cc44; font-size: 11px;");
-                    fmStatusLabel->setText(msg);
-                    if (isError)
-                        QMessageBox::critical(this, "FM audio", msg);
-                });
-
-        fmStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
-
-        if (fmDemodHandler_) {
-            pipeline_->removeHandler(fmDemodHandler_);
-            delete fmDemodHandler_;
-            fmDemodHandler_ = nullptr;
-        }
-        fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
-        connect(fmDemodHandler_, &FmDemodHandler::audioReady,
-                fmAudio_,        &FmAudioOutput::push,
-                Qt::QueuedConnection);
-        pipeline_->addHandler(fmDemodHandler_);
-
-        fmStatusLabel->setText("FM: waiting for first audio block…");
-    });
+    // Mode change → swap demodulator handler
+    connect(modeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &DeviceDetailWindow::onModeChanged);
 
     // Volume → audio sink
-    connect(fmVolumeSlider, &QSlider::valueChanged, this, [this](int v) {
-        fmVolumeLabel->setText(QString("%1%").arg(v));
-        if (fmAudio_) fmAudio_->setVolume(static_cast<float>(v) / 100.0f);
+    connect(demodVolSlider_, &QSlider::valueChanged, this, [this](int v) {
+        demodVolLabel_->setText(QString("%1%").arg(v));
+        if (audioOut_) audioOut_->setVolume(static_cast<float>(v) / 100.0f);
     });
 
-    // BW change → update filter band on spectrum + FmDemodHandler on the fly
+    // FM BW change
     connect(fmBwSpin_, &QDoubleSpinBox::valueChanged, this, [this](double bwKHz) {
-        updateFilterBand(fmCheckBox->isChecked());
+        updateFilterBand(modeCombo_->currentIndex() != 0);
         if (fmDemodHandler_) fmDemodHandler_->setBandwidth(bwKHz * 1000.0);
     });
 
-    // When LO changes → update VFO range and keep filter band centred correctly
-    connect(freqSpinBox, &QDoubleSpinBox::valueChanged, this, [this](double loMHz) {
-        if (fmVfoSpin_) {
-            const double sr = device->sampleRate();
-            const double halfBand = (sr > 0 ? sr / 2.0 : 2e6) / 1e6;
-            fmVfoSpin_->setRange(loMHz - halfBand, loMHz + halfBand);
-        }
-        updateFilterBand(fmCheckBox->isChecked());
+    // AM BW change
+    connect(amBwSpin_, &QDoubleSpinBox::valueChanged, this, [this](double bwKHz) {
+        updateFilterBand(modeCombo_->currentIndex() != 0);
+        if (amDemodHandler_) amDemodHandler_->setBandwidth(bwKHz * 1000.0);
     });
 
-    fmHlay->addWidget(fmCheckBox);
-    fmHlay->addSpacing(8);
-    fmHlay->addWidget(fmBwLabel);
-    fmHlay->addWidget(fmBwSpin_);
-    fmHlay->addSpacing(8);
-    fmHlay->addWidget(fmDeemphLabel);
-    fmHlay->addWidget(fmDeemphCombo);
-    fmHlay->addSpacing(8);
-    fmHlay->addWidget(fmVolLabel);
-    fmHlay->addWidget(fmVolumeSlider);
-    fmHlay->addWidget(fmVolumeLabel);
-    fmHlay->addStretch();
+    // When LO changes → update VFO range and filter band
+    connect(freqSpinBox, &QDoubleSpinBox::valueChanged, this, [this](double loMHz) {
+        if (demodVfoSpin_) {
+            const double sr = device->sampleRate();
+            const double halfBand = (sr > 0 ? sr / 2.0 : 2e6) / 1e6;
+            demodVfoSpin_->setRange(loMHz - halfBand, loMHz + halfBand);
+        }
+        updateFilterBand(modeCombo_->currentIndex() != 0);
+    });
 
     // ── VFO tuner ─────────────────────────────────────────────────────────────
-    // Allows tuning to any station within the capture band without retuning LO.
-    // Click on the spectrum to jump the VFO there, or edit the spinbox directly.
     auto* vfoRow  = new QWidget(page);
     auto* vfoHlay = new QHBoxLayout(vfoRow);
     vfoHlay->setContentsMargins(0, 0, 0, 0);
 
     auto* vfoLabel = new QLabel("VFO:", vfoRow);
-    vfoLabel->setToolTip("Tune FM demodulator to a specific station.\n"
+    vfoLabel->setToolTip("Tune demodulator to a station within the capture band.\n"
                          "Click anywhere on the spectrum to jump here.");
 
-    fmVfoSpin_ = new QDoubleSpinBox(vfoRow);
-    fmVfoSpin_->setRange(kFreqMinMHz, kFreqMaxMHz);
-    fmVfoSpin_->setDecimals(3);
-    fmVfoSpin_->setSingleStep(0.1);
-    fmVfoSpin_->setValue(kFreqDefaultMHz);
-    fmVfoSpin_->setFixedWidth(110);
-    fmVfoSpin_->setEnabled(false);
-    fmVfoSpin_->setToolTip("Station frequency (MHz). Edit or click the spectrum.");
+    demodVfoSpin_ = new QDoubleSpinBox(vfoRow);
+    demodVfoSpin_->setRange(kFreqMinMHz, kFreqMaxMHz);
+    demodVfoSpin_->setDecimals(3);
+    demodVfoSpin_->setSingleStep(0.1);
+    demodVfoSpin_->setValue(kFreqDefaultMHz);
+    demodVfoSpin_->setFixedWidth(110);
+    demodVfoSpin_->setEnabled(false);
+    demodVfoSpin_->setToolTip("Station frequency (MHz). Edit or click the spectrum.");
 
-    auto* vfoHintLabel = new QLabel("← click spectrum to tune", vfoRow);
+    auto* vfoHintLabel = new QLabel("\u2190 click spectrum to tune", vfoRow);
     vfoHintLabel->setStyleSheet("color: gray; font-size: 10px;");
 
     vfoHlay->addWidget(vfoLabel);
-    vfoHlay->addWidget(fmVfoSpin_);
+    vfoHlay->addWidget(demodVfoSpin_);
     vfoHlay->addWidget(vfoHintLabel);
     vfoHlay->addStretch();
 
-    // VFO changed → update filter band + apply NCO offset to running demodulator
-    connect(fmVfoSpin_, &QDoubleSpinBox::valueChanged, this, [this](double vfoMHz) {
-        updateFilterBand(fmCheckBox->isChecked());
-        if (fmDemodHandler_) {
-            const double offsetHz = (vfoMHz - freqSpinBox->value()) * 1e6;
-            fmDemodHandler_->setOffset(offsetHz);
-        }
+    // VFO changed → update filter band + apply offset to active handler
+    connect(demodVfoSpin_, &QDoubleSpinBox::valueChanged, this, [this](double vfoMHz) {
+        updateFilterBand(modeCombo_->currentIndex() != 0);
+        const double offsetHz = (vfoMHz - freqSpinBox->value()) * 1e6;
+        if (fmDemodHandler_) fmDemodHandler_->setOffset(offsetHz);
+        if (amDemodHandler_) amDemodHandler_->setOffset(offsetHz);
     });
 
-    // ── FM signal level indicator ─────────────────────────────────────────────
-    auto* fmRow2  = new QWidget(page);
-    auto* fmHlay2 = new QHBoxLayout(fmRow2);
-    fmHlay2->setContentsMargins(0, 0, 0, 0);
+    // ── Signal level indicator ────────────────────────────────────────────────
+    auto* levelRow  = new QWidget(page);
+    auto* levelHlay = new QHBoxLayout(levelRow);
+    levelHlay->setContentsMargins(0, 0, 0, 0);
 
-    fmLevelLabel_ = new QLabel("▯▯▯▯▯▯▯▯▯▯", fmRow2);
-    fmLevelLabel_->setStyleSheet("color: gray; font-size: 10px;");
-    fmLevelLabel_->setToolTip("Signal level after FM demodulation.\n"
-                              "Gray = weak / no station\n"
-                              "Green = good signal\n"
-                              "Red = clipping (reduce gain)");
+    demodLevelLabel_ = new QLabel("\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF", levelRow);
+    demodLevelLabel_->setStyleSheet("color: gray; font-size: 10px;");
+    demodLevelLabel_->setToolTip("Signal level after demodulation.\n"
+                                 "Gray = weak / no station\n"
+                                 "Green = good signal");
 
-    fmHlay2->addWidget(fmLevelLabel_);
-    fmHlay2->addStretch();
+    levelHlay->addWidget(demodLevelLabel_);
+    levelHlay->addStretch();
 
     // ── Stream controls ───────────────────────────────────────────────────────
     auto* btnRow  = new QWidget(page);
@@ -554,20 +461,19 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     streamStatusLabel = new QLabel("Idle", page);
     streamStatusLabel->setStyleSheet("color: gray;");
 
-    // ── FM status label ───────────────────────────────────────────────────────
-    fmStatusLabel = new QLabel(page);
-    fmStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
+    // ── Demod status label ───────────────────────────────────────────────────
+    demodStatusLabel_ = new QLabel(page);
+    demodStatusLabel_->setStyleSheet("color: gray; font-size: 11px;");
 
     layout->addWidget(title);
     layout->addSpacing(4);
     layout->addWidget(fftPlot, 1);
     layout->addWidget(freqRow);
     layout->addWidget(recordRow);
-    layout->addWidget(wavRow);
-    layout->addWidget(fmRow);
+    layout->addWidget(demodRow);
     layout->addWidget(vfoRow);
-    layout->addWidget(fmRow2);
-    layout->addWidget(fmStatusLabel);
+    layout->addWidget(levelRow);
+    layout->addWidget(demodStatusLabel_);
     layout->addWidget(btnRow);
     layout->addWidget(streamStatusLabel);
     return page;
@@ -663,28 +569,30 @@ void DeviceDetailWindow::setupFftPlot() {
         fftPlot->replot(QCustomPlot::rpQueuedReplot);
     });
 
-    // Click on spectrum → tune VFO to that frequency (FM must be enabled)
+    // Click on spectrum → tune VFO to that frequency (demod must be active)
     connect(fftPlot, &QCustomPlot::mousePress, this,
             [this](QMouseEvent* event) {
-        if (!fmCheckBox || !fmCheckBox->isChecked()) return;
-        if (!fmVfoSpin_) return;
+        if (!modeCombo_ || modeCombo_->currentIndex() == 0) return;
+        if (!demodVfoSpin_) return;
         const double clickedMHz = fftPlot->xAxis->pixelToCoord(event->pos().x());
-        // Clamp to the current capture band shown on the plot
         const double lo   = freqSpinBox->value();
         const double sr   = device->sampleRate();
         const double half = (sr > 0 ? sr / 2.0 : 2e6) / 1e6;
         const double clamped = std::clamp(clickedMHz, lo - half, lo + half);
-        fmVfoSpin_->setValue(clamped);
+        demodVfoSpin_->setValue(clamped);
     });
 }
 
-// Filter band: ±BW/2 around VFO frequency, visible only when FM is on.
+// Filter band: ±BW around VFO frequency, visible when demod is active.
 void DeviceDetailWindow::updateFilterBand(bool visible) {
     if (!vfoBand_) return;
     vfoBand_->setVisible(visible);
     if (visible) {
-        const double vfoMHz = fmVfoSpin_ ? fmVfoSpin_->value() : freqSpinBox->value();
-        const double bwMHz  = (fmBwSpin_ ? fmBwSpin_->value() : 100.0) / 1000.0;
+        const double vfoMHz = demodVfoSpin_ ? demodVfoSpin_->value() : freqSpinBox->value();
+        double bwMHz = 100.0 / 1000.0;   // default
+        const int mode = modeCombo_ ? modeCombo_->currentIndex() : 0;
+        if (mode == 1 && fmBwSpin_)       bwMHz = fmBwSpin_->value() / 1000.0;
+        else if (mode == 2 && amBwSpin_)  bwMHz = amBwSpin_->value() / 1000.0;
         vfoBand_->topLeft->setCoords    (vfoMHz - bwMHz, 10.0);
         vfoBand_->bottomRight->setCoords(vfoMHz + bwMHz, -130.0);
     }
@@ -736,6 +644,89 @@ void DeviceDetailWindow::onControllerError(const QString& message) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Recording settings dialog
+// ═══════════════════════════════════════════════════════════════════════════════
+void DeviceDetailWindow::openRecordSettings() {
+    QDialog dlg(this);
+    dlg.setWindowTitle("Recording Settings");
+    auto* form = new QVBoxLayout(&dlg);
+
+    // Raw file path
+    auto* rawRow = new QHBoxLayout;
+    rawRow->addWidget(new QLabel("Raw file:"));
+    auto* rawEdit = new QLineEdit(recordPath_);
+    rawRow->addWidget(rawEdit, 1);
+    auto* rawBrowse = new QPushButton("...");
+    rawBrowse->setFixedWidth(30);
+    connect(rawBrowse, &QPushButton::clicked, &dlg, [&]() {
+        const QString p = QFileDialog::getSaveFileName(
+            &dlg, "Save IQ capture", rawEdit->text(), "Raw IQ (*.raw);;All files (*)");
+        if (!p.isEmpty()) rawEdit->setText(p);
+    });
+    rawRow->addWidget(rawBrowse);
+    form->addLayout(rawRow);
+
+    // WAV file path
+    auto* wavRow = new QHBoxLayout;
+    wavRow->addWidget(new QLabel("WAV file:"));
+    auto* wavEdit = new QLineEdit(wavPath_);
+    wavRow->addWidget(wavEdit, 1);
+    auto* wavBrowse = new QPushButton("...");
+    wavBrowse->setFixedWidth(30);
+    connect(wavBrowse, &QPushButton::clicked, &dlg, [&]() {
+        const QString p = QFileDialog::getSaveFileName(
+            &dlg, "Save filtered WAV", wavEdit->text(), "WAV (*.wav);;All files (*)");
+        if (!p.isEmpty()) wavEdit->setText(p);
+    });
+    wavRow->addWidget(wavBrowse);
+    form->addLayout(wavRow);
+
+    // WAV offset
+    auto* offsetRow = new QHBoxLayout;
+    offsetRow->addWidget(new QLabel("WAV offset (Hz):"));
+    auto* offsetSpin = new QDoubleSpinBox;
+    offsetSpin->setRange(-15e6, 15e6);
+    offsetSpin->setDecimals(0);
+    offsetSpin->setSingleStep(100'000.0);
+    offsetSpin->setValue(wavOffset_);
+    offsetSpin->setToolTip("Station offset from LO (Hz)");
+    offsetRow->addWidget(offsetSpin);
+    offsetRow->addStretch();
+    form->addLayout(offsetRow);
+
+    // WAV bandwidth
+    auto* bwRow = new QHBoxLayout;
+    bwRow->addWidget(new QLabel("WAV bandwidth (Hz):"));
+    auto* bwSpin = new QDoubleSpinBox;
+    bwSpin->setRange(10'000.0, 500'000.0);
+    bwSpin->setDecimals(0);
+    bwSpin->setSingleStep(10'000.0);
+    bwSpin->setValue(wavBw_);
+    bwRow->addWidget(bwSpin);
+    bwRow->addStretch();
+    form->addLayout(bwRow);
+
+    // OK / Cancel
+    auto* buttons = new QHBoxLayout;
+    auto* okBtn = new QPushButton("OK");
+    auto* cancelBtn = new QPushButton("Cancel");
+    buttons->addStretch();
+    buttons->addWidget(okBtn);
+    buttons->addWidget(cancelBtn);
+    form->addLayout(buttons);
+
+    connect(okBtn,     &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        recordPath_ = rawEdit->text();
+        wavPath_    = wavEdit->text();
+        wavOffset_  = offsetSpin->value();
+        wavBw_      = bwSpin->value();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Stream control
 // ═══════════════════════════════════════════════════════════════════════════════
 void DeviceDetailWindow::startStream() {
@@ -747,9 +738,10 @@ void DeviceDetailWindow::startStream() {
     if (controller_->isInitialized())
         controller_->setFrequency(freqSpinBox->value());
 
+    const int demodMode = modeCombo_ ? modeCombo_->currentIndex() : 0;
     LOG_INFO("startStream: record=" + std::to_string(recordCheckBox->isChecked())
              + " wav=" + std::to_string(wavCheckBox->isChecked())
-             + " fm=" + std::to_string(fmCheckBox->isChecked())
+             + " mode=" + std::to_string(demodMode)
              + " lo=" + std::to_string(freqSpinBox->value()) + " MHz");
 
     // ── Build pipeline ────────────────────────────────────────────────────────
@@ -766,60 +758,61 @@ void DeviceDetailWindow::startStream() {
 
     // Raw .raw recording
     if (recordCheckBox->isChecked()) {
-        auto* rawHandler = new RawFileHandler(recordPathEdit->text());
+        auto* rawHandler = new RawFileHandler(recordPath_);
         pipeline_->addHandler(rawHandler);
-        // Ownership: pipeline dispatches but doesn't own; store ptr in a list for cleanup
-        // For simplicity, wrap in QObject-managed via deleteLater on stream stop
-        // (handler will be cleaned in teardownStream via pipeline_->clearHandlers + delete)
         rawHandlers_.push_back(rawHandler);
     }
 
     // Bandpass WAV export
     if (wavCheckBox->isChecked()) {
         auto* wavHandler = new BandpassHandler(
-            wavPathEdit->text(),
-            wavOffsetSpin->value(),
-            wavBwSpin->value());
+            wavPath_, wavOffset_, wavBw_);
         pipeline_->addHandler(wavHandler);
         wavHandlers_.push_back(wavHandler);
     }
 
-    // FM demodulation
-    if (fmCheckBox->isChecked()) {
-        const double tau      = fmDeemphCombo->currentData().toDouble();
-        const double bwHz     = fmBwSpin_->value() * 1000.0;
-        const double offsetHz = fmVfoSpin_
-                                ? (fmVfoSpin_->value() - freqSpinBox->value()) * 1e6
+    // Demodulation (FM or AM)
+    if (demodMode > 0) {
+        const double offsetHz = demodVfoSpin_
+                                ? (demodVfoSpin_->value() - freqSpinBox->value()) * 1e6
                                 : 0.0;
 
-        LOG_INFO("FM demod: LO=" + std::to_string(freqSpinBox->value())
-                 + " MHz  VFO=" + std::to_string(fmVfoSpin_ ? fmVfoSpin_->value() : freqSpinBox->value())
-                 + " MHz  offset=" + std::to_string(static_cast<int>(offsetHz))
-                 + " Hz  BW=" + std::to_string(static_cast<int>(bwHz)) + " Hz");
+        delete audioOut_;
+        audioOut_ = new FmAudioOutput(this);
+        audioOut_->setVolume(static_cast<float>(demodVolSlider_->value()) / 100.0f);
 
-        fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
-        pipeline_->addHandler(fmDemodHandler_);
-
-        delete fmAudio_;
-        fmAudio_ = new FmAudioOutput(this);
-        fmAudio_->setVolume(static_cast<float>(fmVolumeSlider->value()) / 100.0f);
-
-        connect(fmDemodHandler_, &FmDemodHandler::audioReady,
-                fmAudio_,        &FmAudioOutput::push,
-                Qt::QueuedConnection);
-
-        connect(fmAudio_, &FmAudioOutput::statusChanged, this,
+        connect(audioOut_, &FmAudioOutput::statusChanged, this,
                 [this](const QString& msg, bool isError) {
-                    fmStatusLabel->setStyleSheet(
+                    demodStatusLabel_->setStyleSheet(
                         isError ? "color: #ff4444; font-size: 11px;"
                                 : "color: #00cc44; font-size: 11px;");
-                    fmStatusLabel->setText(msg);
+                    demodStatusLabel_->setText(msg);
                     if (isError)
-                        QMessageBox::critical(this, "FM audio", msg);
+                        QMessageBox::critical(this, "Audio", msg);
                 });
 
-        fmStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
-        fmStatusLabel->setText("FM: waiting for first audio block…");
+        if (demodMode == 1) {
+            // FM
+            const double tau  = fmDeemphCombo->currentData().toDouble();
+            const double bwHz = fmBwSpin_->value() * 1000.0;
+            fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
+            connect(fmDemodHandler_, &FmDemodHandler::audioReady,
+                    audioOut_,       &FmAudioOutput::push,
+                    Qt::QueuedConnection);
+            pipeline_->addHandler(fmDemodHandler_);
+        } else {
+            // AM
+            const double bwHz = amBwSpin_->value() * 1000.0;
+            amDemodHandler_ = new AmDemodHandler(offsetHz, bwHz, this);
+            connect(amDemodHandler_, &AmDemodHandler::audioReady,
+                    audioOut_,       &FmAudioOutput::push,
+                    Qt::QueuedConnection);
+            pipeline_->addHandler(amDemodHandler_);
+        }
+
+        demodStatusLabel_->setStyleSheet("color: gray; font-size: 11px;");
+        demodStatusLabel_->setText(demodMode == 1 ? "FM: waiting for first audio block\u2026"
+                                                  : "AM: waiting for first audio block\u2026");
     }
 
     // ── Start worker thread ───────────────────────────────────────────────────
@@ -843,7 +836,7 @@ void DeviceDetailWindow::startStream() {
     // Start metrics refresh (500 ms interval)
     if (!metricsTimer_) {
         metricsTimer_ = new QTimer(this);
-        connect(metricsTimer_, &QTimer::timeout, this, &DeviceDetailWindow::updateFmMetrics);
+        connect(metricsTimer_, &QTimer::timeout, this, &DeviceDetailWindow::updateDemodMetrics);
     }
     metricsTimer_->start(500);
 
@@ -876,32 +869,38 @@ void DeviceDetailWindow::teardownStream() {
 
     delete fftHandler_;      fftHandler_     = nullptr;
     delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
+    delete amDemodHandler_;  amDemodHandler_ = nullptr;
 
     for (auto* h : rawHandlers_) delete h;
     rawHandlers_.clear();
     for (auto* h : wavHandlers_) delete h;
     wavHandlers_.clear();
 
-    if (fmAudio_) {
-        // Disconnect statusChanged before teardown so the emitted signal
-        // doesn't fire into partially-destroyed window state (e.g. during
-        // QObject child cleanup in the destructor).
-        disconnect(fmAudio_, nullptr, this, nullptr);
-        fmAudio_->teardown();
+    if (audioOut_) {
+        disconnect(audioOut_, nullptr, this, nullptr);
+        audioOut_->teardown();
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FM metrics
 // ═══════════════════════════════════════════════════════════════════════════════
-void DeviceDetailWindow::updateFmMetrics() {
-    if (!fmDemodHandler_ || !fmLevelLabel_) return;
+void DeviceDetailWindow::updateDemodMetrics() {
+    if (!demodLevelLabel_) return;
 
-    const double snr   = fmDemodHandler_->snrDb();
-    const double ifRms = fmDemodHandler_->ifRms();
+    // Read SNR from whichever handler is active
+    double snr = 0.0, ifRms = 0.0;
+    if (fmDemodHandler_) {
+        snr   = fmDemodHandler_->snrDb();
+        ifRms = fmDemodHandler_->ifRms();
+    } else if (amDemodHandler_) {
+        snr   = amDemodHandler_->snrDb();
+        ifRms = amDemodHandler_->ifRms();
+    } else {
+        return;
+    }
 
-    // Level bar: 10 blocks, each block ≈ 1.5 dB SNR (0..15 dB range)
-    constexpr int   kBlocks   = 10;
+    constexpr int    kBlocks  = 10;
     constexpr double kSnrMax  = 15.0;
     const int filled = static_cast<int>(
         std::clamp(snr / kSnrMax * kBlocks, 0.0, static_cast<double>(kBlocks)));
@@ -909,20 +908,101 @@ void DeviceDetailWindow::updateFmMetrics() {
     QString bar;
     bar.reserve(kBlocks);
     for (int i = 0; i < kBlocks; ++i)
-        bar += (i < filled) ? QChar(0x25AE) : QChar(0x25AF);  // ▮ / ▯
+        bar += (i < filled) ? QChar(0x25AE) : QChar(0x25AF);
 
     QString color;
-    if (snr > 6.0)       color = "#00cc44";   // green — good signal
-    else if (snr > 2.0)  color = "#ffaa00";   // orange — marginal
-    else                 color = "#888888";    // gray — noise
+    if (snr > 6.0)       color = "#00cc44";
+    else if (snr > 2.0)  color = "#ffaa00";
+    else                 color = "#888888";
 
-    fmLevelLabel_->setStyleSheet(
+    demodLevelLabel_->setStyleSheet(
         QString("color: %1; font-size: 10px;").arg(color));
-    fmLevelLabel_->setText(
+    demodLevelLabel_->setText(
         QString("%1  SNR %2 dB  IF %3")
             .arg(bar)
             .arg(snr,   0, 'f', 1)
             .arg(ifRms, 0, 'f', 3));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Demodulator mode switching
+// ═══════════════════════════════════════════════════════════════════════════════
+void DeviceDetailWindow::teardownDemodHandler() {
+    if (pipeline_ && fmDemodHandler_) {
+        pipeline_->removeHandler(fmDemodHandler_);
+        delete fmDemodHandler_;
+        fmDemodHandler_ = nullptr;
+    }
+    if (pipeline_ && amDemodHandler_) {
+        pipeline_->removeHandler(amDemodHandler_);
+        delete amDemodHandler_;
+        amDemodHandler_ = nullptr;
+    }
+    if (audioOut_) audioOut_->teardown();
+    if (demodStatusLabel_) demodStatusLabel_->setText("");
+}
+
+void DeviceDetailWindow::onModeChanged(int index) {
+    const bool active = (index != 0);
+    const bool isFm   = (index == 1);
+    const bool isAm   = (index == 2);
+
+    // Show/hide mode-specific widgets
+    fmBwLabel_->setVisible(isFm);     fmBwSpin_->setVisible(isFm);
+    fmDeemphLabel_->setVisible(isFm); fmDeemphCombo->setVisible(isFm);
+    amBwLabel_->setVisible(isAm);     amBwSpin_->setVisible(isAm);
+
+    // Enable/disable shared controls
+    demodVolSlider_->setVisible(active);
+    demodVolLabel_->setVisible(active);
+    if (demodVfoSpin_) demodVfoSpin_->setEnabled(active);
+
+    updateFilterBand(active);
+
+    // Teardown current handler
+    teardownDemodHandler();
+
+    if (!active || !pipeline_) return;
+
+    // Create audio output
+    delete audioOut_;
+    audioOut_ = new FmAudioOutput(this);
+    audioOut_->setVolume(static_cast<float>(demodVolSlider_->value()) / 100.0f);
+
+    connect(audioOut_, &FmAudioOutput::statusChanged, this,
+            [this](const QString& msg, bool isError) {
+                demodStatusLabel_->setStyleSheet(
+                    isError ? "color: #ff4444; font-size: 11px;"
+                            : "color: #00cc44; font-size: 11px;");
+                demodStatusLabel_->setText(msg);
+                if (isError)
+                    QMessageBox::critical(this, "Audio", msg);
+            });
+
+    const double offsetHz = demodVfoSpin_
+                            ? (demodVfoSpin_->value() - freqSpinBox->value()) * 1e6
+                            : 0.0;
+
+    if (isFm) {
+        const double tau  = fmDeemphCombo->currentData().toDouble();
+        const double bwHz = fmBwSpin_->value() * 1000.0;
+        fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
+        connect(fmDemodHandler_, &FmDemodHandler::audioReady,
+                audioOut_,       &FmAudioOutput::push,
+                Qt::QueuedConnection);
+        pipeline_->addHandler(fmDemodHandler_);
+        demodStatusLabel_->setText("FM: waiting for first audio block\u2026");
+    } else {
+        const double bwHz = amBwSpin_->value() * 1000.0;
+        amDemodHandler_ = new AmDemodHandler(offsetHz, bwHz, this);
+        connect(amDemodHandler_, &AmDemodHandler::audioReady,
+                audioOut_,       &FmAudioOutput::push,
+                Qt::QueuedConnection);
+        pipeline_->addHandler(amDemodHandler_);
+        demodStatusLabel_->setText("AM: waiting for first audio block\u2026");
+    }
+
+    demodStatusLabel_->setStyleSheet("color: gray; font-size: 11px;");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -969,6 +1049,7 @@ void DeviceDetailWindow::onStreamFinished() {
 
     delete fftHandler_;      fftHandler_     = nullptr;
     delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
+    delete amDemodHandler_;  amDemodHandler_ = nullptr;
 
     for (auto* h : rawHandlers_) delete h;
     rawHandlers_.clear();
@@ -980,12 +1061,12 @@ void DeviceDetailWindow::onStreamFinished() {
     streamStopButton->setEnabled(false);
     streamStatusLabel->setStyleSheet("color: gray;");
     streamStatusLabel->setText("Idle");
-    if (fmAudio_) {
-        disconnect(fmAudio_, nullptr, this, nullptr);
-        fmAudio_->teardown();
+    if (audioOut_) {
+        disconnect(audioOut_, nullptr, this, nullptr);
+        audioOut_->teardown();
     }
-    if (fmStatusLabel) fmStatusLabel->setText("");
-    if (fmLevelLabel_) fmLevelLabel_->setText("▯▯▯▯▯▯▯▯▯▯");
+    if (demodStatusLabel_) demodStatusLabel_->setText("");
+    if (demodLevelLabel_)  demodLevelLabel_->setText("\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF");
 
     // Resume connection watchdog now that streaming has stopped.
     connectionTimer->start();

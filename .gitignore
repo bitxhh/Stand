@@ -44,4 +44,6 @@ __pycache__/
 *.pyc
 
 !external/fftw/bin/*.dll
-!external/fftw/lib/*.dll.aTODO
+!external/fftw/lib/*.dll.a
+TODO
+.claude/

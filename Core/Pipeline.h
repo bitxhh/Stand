@@ -3,6 +3,7 @@
 #include "IPipelineHandler.h"
 #include <QObject>
 #include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,6 @@ public:
     void notifyStopped();
 
 private:
-    std::mutex                     mutex_;
+    std::shared_mutex              mutex_;
     std::vector<IPipelineHandler*> handlers_;
 };

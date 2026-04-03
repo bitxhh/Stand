@@ -75,6 +75,10 @@ add_executable(Stand
         DSP/FmDemodulator.h
         DSP/FmDemodHandler.cpp
         DSP/FmDemodHandler.h
+        DSP/AmDemodulator.cpp
+        DSP/AmDemodulator.h
+        DSP/AmDemodHandler.cpp
+        DSP/AmDemodHandler.h
         DSP/RawFileHandler.cpp
         DSP/RawFileHandler.h
 
@@ -147,9 +151,11 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(StandTests
         Tests/test_fmdemod.cpp
+        Tests/test_amdemod.cpp
         Tests/test_fftprocessor.cpp
 
         DSP/FmDemodulator.cpp
+        DSP/AmDemodulator.cpp
         DSP/FftProcessor.cpp
         Core/Logger.cpp
 )

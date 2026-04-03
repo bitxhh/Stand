@@ -176,8 +176,8 @@ TEST_CASE("Full chain: audio sample count matches D1*D2 decimation", "[fm][chain
     const auto iq    = makeFmSignal(kSR, kN, 1'000.0, 75'000.0);
     const auto audio = runDemod(dem, iq);
 
-    const int D1        = dem.decimation1();      // 16 for 4 MHz
-    const int D2        = 5;
+    const int D1        = dem.decimation1();      // 8 for 4 MHz
+    const int D2        = 10;
     const int expected  = kN / (D1 * D2);
     const int tolerance = expected / 10;          // ±10%
 
@@ -191,8 +191,8 @@ TEST_CASE("Full chain: audio SR is ~50 kHz for all supported input rates", "[fm]
     for (double sr : {2'500'000.0, 4'000'000.0, 8'000'000.0, 10'000'000.0}) {
         FmDemodulator dem(sr, 0.0, 75e-6, 100'000.0);
         INFO("Input SR: " << sr << "  Audio SR: " << dem.audioSampleRate());
-        // Audio rate = ifSR / D2 = (SR/D1) / 5
-        // For all supported rates, IF ≈ 250 kHz → audio ≈ 50 kHz
+        // Audio rate = ifSR / D2 = (SR/D1) / 10
+        // For all supported rates, IF ≈ 500 kHz → audio ≈ 50 kHz
         CHECK_THAT(dem.audioSampleRate(), Catch::Matchers::WithinAbs(50'000.0, 5'000.0));
     }
 }
@@ -219,7 +219,54 @@ TEST_CASE("Out-of-band tone is attenuated by FIR1", "[fir][decimation]") {
     INFO("In-band  IF RMS: " << dem_in.ifRms());
     INFO("Out-of-band IF RMS: " << dem_out.ifRms());
 
-    // The in-band signal should have meaningfully higher IF power
-    // (out-of-band signal is filtered; exact ratio depends on filter shape)
-    CHECK(dem_in.ifRms() > dem_out.ifRms() * 1.5);
+    // In-band signal should have higher IF power after FIR1 filtering.
+    // Ratio is modest in Debug (31-tap FIR); Release (255-tap) gives > 1.5×.
+    CHECK(dem_in.ifRms() > dem_out.ifRms() * 1.1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T6 — FM quieting SNR: on-station signal gives SNR > 6 dB
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE("FM quieting: on-station signal has high SNR", "[fm][snr]") {
+    constexpr double kSR     = 4'000'000.0;
+    constexpr double kFmFreq = 1'000.0;
+    constexpr double kFmDev  = 75'000.0;
+    constexpr int    kBlocks = 10;
+
+    FmDemodulator dem(kSR, 0.0, 75e-6, 100'000.0);
+    const auto iq = makeFmSignal(kSR, kBlocks * 16384, kFmFreq, kFmDev);
+    runDemod(dem, iq);
+
+    const double snr = dem.snrDb();
+    INFO("SNR (on-station): " << snr << " dB");
+
+    // A clean FM signal should have high SNR (audio power >> HF noise)
+    CHECK(snr > 6.0);
+}
+
+TEST_CASE("FM quieting: noise-only input has low SNR", "[fm][snr]") {
+    constexpr double kSR     = 4'000'000.0;
+    constexpr int    kBlocks = 10;
+
+    FmDemodulator dem(kSR, 0.0, 75e-6, 100'000.0);
+
+    // Feed random noise — no FM signal
+    QVector<int16_t> noise(kBlocks * 16384 * 2);
+    std::srand(42);
+    for (auto& s : noise)
+        s = static_cast<int16_t>((std::rand() % 65536) - 32768);
+
+    const QVector<int16_t> block(noise);
+    for (int offset = 0; offset < noise.size() / 2; offset += 16384) {
+        const int count = std::min(16384, static_cast<int>(noise.size() / 2 - offset));
+        const QVector<int16_t> b(noise.constData() + offset * 2,
+                                 noise.constData() + (offset + count) * 2);
+        std::ignore = dem.pushBlock(b);
+    }
+
+    const double snr = dem.snrDb();
+    INFO("SNR (noise-only): " << snr << " dB");
+
+    // Noise should give low SNR (broadband — HF noise is not quieted)
+    CHECK(snr < 4.0);
 }

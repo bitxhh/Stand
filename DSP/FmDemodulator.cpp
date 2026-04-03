@@ -72,6 +72,11 @@ FmDemodulator::FmDemodulator(double inputSampleRateHz,
     // ── De-emphasis pole ─────────────────────────────────────────────────────
     deemphP_ = std::exp(-1.0 / (deemphTau_ * ifSR_));
 
+    // ── SNR highpass filter pole (FM quieting) ───────────────────────────────
+    // First-order IIR highpass at ~15 kHz on the discriminator output.
+    // Passes only HF noise; audio content is below 15 kHz.
+    hpAlpha_ = std::exp(-2.0 * kPi * 15'000.0 / ifSR_);
+
     LOG_INFO("FmDemodulator: inputSR=" + std::to_string(static_cast<int>(inputSR_))
              + " offset=" + std::to_string(static_cast<int>(stationOffset_)) + " Hz"
              + " D1=" + std::to_string(D1_)
@@ -96,9 +101,11 @@ void FmDemodulator::setBandwidth(double bandwidthHz) {
     std::fill(fir1Delay_.begin(), fir1Delay_.end(), std::complex<double>{0.0, 0.0});
     fir1Head_ = 0;
 
-    // Reset noise floor — it will re-calibrate over the next kNoiseFloorWarmup samples
-    noiseFloor_  = -1.0;
-    noiseWarmup_ = 0;
+    // Reset SNR estimator state
+    hpState_  = 0.0;
+    hpPrevIn_ = 0.0;
+    audioPowerAvg_ = 0.0;
+    noisePowerAvg_ = 0.0;
 
     LOG_INFO("FmDemodulator: bandwidth set to "
              + std::to_string(static_cast<int>(bandwidth_)) + " Hz"
@@ -130,9 +137,11 @@ void FmDemodulator::setOffset(double offsetHz) {
     fir2Head_    = 0;
     dec2Counter_ = 0;
 
-    // Re-calibrate noise floor at new frequency
-    noiseFloor_  = -1.0;
-    noiseWarmup_ = 0;
+    // Reset SNR estimator state at new frequency
+    hpState_  = 0.0;
+    hpPrevIn_ = 0.0;
+    audioPowerAvg_ = 0.0;
+    noisePowerAvg_ = 0.0;
 
     LOG_INFO("FmDemodulator: offset set to "
              + std::to_string(static_cast<int>(offsetHz)) + " Hz"
@@ -253,39 +262,24 @@ QVector<float> FmDemodulator::pushBlock(const QVector<int16_t>& iqBlock) {
 
         const auto filtered1 = fir1Compute();   // O(N), but only every D1 samples
 
-        // ── 6. IF signal power — noise floor calibration + SNR ───────────────
+        // ── 6. IF signal power (diagnostic) ─────────────────────────────────
         const double ifPower = filtered1.real() * filtered1.real()
                              + filtered1.imag() * filtered1.imag();
         ifPowerAvg_ = (1.0 - kPowerAlpha) * ifPowerAvg_ + kPowerAlpha * ifPower;
-
-        // Track noise floor as a slow-decaying minimum of IF power.
-        // FM signals have nearly constant envelope, so the "quiet periods"
-        // approach doesn't work.  Instead: initialise to current power, then
-        // decay slowly toward the minimum seen so far.  When the signal drops
-        // (e.g. briefly off-tune), the floor drifts down; in steady state it
-        // sits just below the signal level, giving a realistic SNR estimate.
-        // NOTE: the old warmup-based calibration assumed the first 8 ms were
-        // signal-free, but LMS_StartStream delivers samples almost immediately,
-        // so noiseFloor_ ended up ≈ signal power → SNR always ≈ 0 → NOISE.
-        if (noiseFloor_ < 0.0) {
-            noiseFloor_ = ifPowerAvg_;
-        } else if (ifPowerAvg_ < noiseFloor_) {
-            // Current power dipped below floor — update down quickly
-            noiseFloor_ = noiseFloor_ * 0.99 + ifPowerAvg_ * 0.01;
-        } else {
-            // Drift floor up very slowly so it tracks long-term noise changes
-            noiseFloor_ = noiseFloor_ * 0.9999 + ifPowerAvg_ * 0.0001;
-        }
 
         // ── 7. FM discriminator ───────────────────────────────────────────────
         const std::complex<double> prod = filtered1 * std::conj(prevIF_);
         prevIF_ = filtered1;
         const double demod = std::atan2(prod.imag(), prod.real()) * demodGain_;
 
-        // Track demodulator output power — used to confirm the discriminator
-        // stage is producing valid output (not just noise from atan2).
-        demodPowerAvg_ = (1.0 - kDemodAlpha) * demodPowerAvg_
-                       + kDemodAlpha * (demod * demod);
+        // ── 7a. FM quieting — HF noise estimator ─────────────────────────────
+        // IIR highpass at ~15 kHz extracts noise above the audio band.
+        // A strong FM station "quiets" this noise; weak/absent → broadband.
+        const double hpOut = hpAlpha_ * (hpState_ + demod - hpPrevIn_);
+        hpState_  = hpOut;
+        hpPrevIn_ = demod;
+        noisePowerAvg_ = (1.0 - kSnrAlpha) * noisePowerAvg_
+                       + kSnrAlpha * (hpOut * hpOut);
 
         // ── 8. De-emphasis ────────────────────────────────────────────────────
         deemphState_ = (1.0 - deemphP_) * demod + deemphP_ * deemphState_;
@@ -297,6 +291,10 @@ QVector<float> FmDemodulator::pushBlock(const QVector<int16_t>& iqBlock) {
         if (++dec2Counter_ < D2_) continue;
         dec2Counter_ = 0;
 
+        // ── 10a. Audio power for SNR (FM quieting) ───────────────────────────
+        audioPowerAvg_ = (1.0 - kSnrAlpha) * audioPowerAvg_
+                       + kSnrAlpha * (filtered2 * filtered2);
+
         // ── 11. Output ────────────────────────────────────────────────────────
         audio.push_back(static_cast<float>(filtered2));
     }
@@ -307,15 +305,15 @@ QVector<float> FmDemodulator::pushBlock(const QVector<int16_t>& iqBlock) {
     if (diagBlockCount_ >= kDiagInterval) {
         diagBlockCount_ = 0;
 
-        const double ifRms    = std::sqrt(ifPowerAvg_);
-        const double demodRms = std::sqrt(demodPowerAvg_);
+        const double ifRms = std::sqrt(ifPowerAvg_);
 
-        // SNR relative to calibrated noise floor.
-        // noiseFloor_ < 0 means warmup not finished yet — skip SNR output.
+        // FM quieting SNR: audio power vs HF noise power.
+        // Strong station → low HF noise → high SNR.
         double snrDb = 0.0;
         const char* quality;
-        if (noiseFloor_ > 0.0) {
-            snrDb = 10.0 * std::log10(ifPowerAvg_ / noiseFloor_);
+        if (noisePowerAvg_ > 1e-20) {
+            snrDb = 10.0 * std::log10(audioPowerAvg_ / noisePowerAvg_);
+            if (snrDb < 0.0) snrDb = 0.0;   // clamp negative (no signal)
             quality = snrDb > 6.0 ? "SIGNAL" : snrDb > 2.0 ? "MARGINAL" : "NOISE";
         } else {
             quality = "WARMUP";
@@ -326,9 +324,10 @@ QVector<float> FmDemodulator::pushBlock(const QVector<int16_t>& iqBlock) {
         snrDbOut_ = snrDb;
 
         LOG_DEBUG("FmDemodulator"
-                  "  if_rms="    + std::to_string(ifRms)
-                + "  snr="       + std::to_string(snrDb) + " dB"
-                + "  demod_rms=" + std::to_string(demodRms)
+                  "  if_rms="      + std::to_string(ifRms)
+                + "  snr="         + std::to_string(snrDb) + " dB"
+                + "  audio_pwr="   + std::to_string(audioPowerAvg_)
+                + "  noise_pwr="   + std::to_string(noisePowerAvg_)
                 + "  [" + quality + "]");
     }
 

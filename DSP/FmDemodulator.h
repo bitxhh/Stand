@@ -106,19 +106,25 @@ private:
     std::complex<double> dcPrevOut_{0.0, 0.0};
     static constexpr double kDcAlpha = 0.9999;
 
-    // ── Signal power / SNR estimator ─────────────────────────────────────────
-    // Running average of |filtered1|² at IF rate — measures received power.
-    // Noise floor is calibrated during the first kNoiseFloorWarmup IF-samples
-    // after construction (or after setBandwidth), then held fixed.
+    // ── Signal power / SNR estimator (FM quieting) ─────────────────────────
+    // FM has constant envelope — IF power alone cannot distinguish signal from
+    // noise.  Instead, measure noise AFTER the discriminator:
+    //   - Audio power: running avg of FIR2 output² (< 15 kHz, the useful audio)
+    //   - Noise power: running avg of HP-filtered discriminator output² (> 15 kHz)
+    // SNR = 10·log10(audioPower / noisePower).
+    // A strong FM station "quiets" the HF noise; weak/absent signal → broadband.
     double ifPowerAvg_{0.0};
-    double noiseFloor_{-1.0};   // < 0 → not yet calibrated
-    int    noiseWarmup_{0};
-    static constexpr int    kNoiseFloorWarmup = 2000;   // ~8 ms at 250 kHz IF
-    static constexpr double kPowerAlpha       = 0.01;   // ~100 IF samples τ
+    static constexpr double kPowerAlpha = 0.01;   // ~100 IF samples τ
 
-    // Demodulator output power — for diagnosing discriminator stage separately
-    double demodPowerAvg_{0.0};
-    static constexpr double kDemodAlpha = 0.01;
+    // IIR highpass on discriminator output — extracts noise above ~15 kHz
+    // H(z) = α·(y[n-1] + x[n] - x[n-1]),  α = exp(-2π·fc/fs)
+    double hpAlpha_{0.0};        // computed in ctor from ifSR_
+    double hpState_{0.0};        // filter state
+    double hpPrevIn_{0.0};       // previous discriminator sample
+
+    double audioPowerAvg_{0.0};  // running avg of FIR2 output² (audio band)
+    double noisePowerAvg_{0.0};  // running avg of HP output² (HF noise)
+    static constexpr double kSnrAlpha = 0.005;   // slower EMA for stable SNR
 
     // Published to callers via ifRms() / snrDb()
     double ifRmsOut_{0.0};

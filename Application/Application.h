@@ -30,6 +30,7 @@
 #include "../Hardware/DeviceController.h"
 #include "../DSP/FftHandler.h"
 #include "../DSP/FmDemodHandler.h"
+#include "../DSP/AmDemodHandler.h"
 #include "../DSP/RawFileHandler.h"
 #include "../DSP/BandpassHandler.h"
 #include "../Audio/FmAudioOutput.h"
@@ -105,27 +106,35 @@ private:
     QDoubleSpinBox* freqSpinBox{nullptr};
     QSlider*        freqSlider{nullptr};
 
-    // Raw .raw recording
+    // Recording
     QCheckBox*  recordCheckBox{nullptr};
-    QLineEdit*  recordPathEdit{nullptr};
+    QCheckBox*  wavCheckBox{nullptr};
 
-    // Bandpass WAV export
-    QCheckBox*      wavCheckBox{nullptr};
-    QDoubleSpinBox* wavOffsetSpin{nullptr};
-    QDoubleSpinBox* wavBwSpin{nullptr};
-    QLineEdit*      wavPathEdit{nullptr};
+    // Recording settings (stored as values, edited via dialog)
+    QString recordPath_;
+    QString wavPath_;
+    double  wavOffset_{0.0};
+    double  wavBw_{100'000.0};
 
-    // ── FM Radio ──────────────────────────────────────────────────────────────
-    QCheckBox*      fmCheckBox{nullptr};
-    QDoubleSpinBox* fmVfoSpin_{nullptr};     // VFO absolute freq (MHz)
+    // ── Demodulator (FM / AM) ────────────────────────────────────────────────
+    QComboBox*      modeCombo_{nullptr};       // "Off" / "FM" / "AM"
+    QDoubleSpinBox* demodVfoSpin_{nullptr};    // VFO absolute freq (MHz)
+    QSlider*        demodVolSlider_{nullptr};  // volume 0-100
+    QLabel*         demodVolLabel_{nullptr};   // volume %
+    QLabel*         demodStatusLabel_{nullptr};
+    QLabel*         demodLevelLabel_{nullptr}; // SNR bar
+
+    // FM-specific (shown only in FM mode)
+    QLabel*         fmBwLabel_{nullptr};
     QDoubleSpinBox* fmBwSpin_{nullptr};
+    QLabel*         fmDeemphLabel_{nullptr};
     QComboBox*      fmDeemphCombo{nullptr};
-    QSlider*        fmVolumeSlider{nullptr};
-    QLabel*         fmVolumeLabel{nullptr};
-    QLabel*         fmStatusLabel{nullptr};
-    QLabel*         fmLevelLabel_{nullptr};
 
-    FmAudioOutput*  fmAudio_{nullptr};
+    // AM-specific (shown only in AM mode)
+    QLabel*         amBwLabel_{nullptr};
+    QDoubleSpinBox* amBwSpin_{nullptr};
+
+    FmAudioOutput*  audioOut_{nullptr};
 
     // ── Spectrum filter band ──────────────────────────────────────────────────
     QCPItemRect*    vfoBand_{nullptr};
@@ -136,6 +145,7 @@ private:
     Pipeline*       pipeline_{nullptr};
     FftHandler*     fftHandler_{nullptr};
     FmDemodHandler* fmDemodHandler_{nullptr};
+    AmDemodHandler* amDemodHandler_{nullptr};
 
     // Non-QObject handlers — owned by DeviceDetailWindow, deleted in teardownStream
     std::vector<RawFileHandler*>     rawHandlers_;
@@ -148,7 +158,9 @@ private:
 
     // ── Metrics ───────────────────────────────────────────────────────────────
     QTimer* metricsTimer_{nullptr};
-    void    updateFmMetrics();
+    void    updateDemodMetrics();
+    void    onModeChanged(int index);
+    void    teardownDemodHandler();
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();
@@ -158,6 +170,7 @@ private:
     void     setupFftPlot();
     void     teardownStream();
     void     updateFilterBand(bool visible);
+    void     openRecordSettings();
 
     static constexpr double kFreqMinMHz     =   30.0;
     static constexpr double kFreqMaxMHz     = 3800.0;
