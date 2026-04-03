@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-**Stand** is an SDR (Software-Defined Radio) receiver application for LimeSDR hardware. It provides real-time spectrum display, WBFM radio demodulation with audio playback, raw I/Q recording, and bandpass-filtered WAV export.
+**Stand** is an SDR (Software-Defined Radio) receiver application for LimeSDR hardware. It provides real-time spectrum display, WBFM and AM radio demodulation with audio playback, raw I/Q recording, and bandpass-filtered WAV export.
 
-Current version: **v1.0.0** (working FM broadcast receiver).
+Current version: **v1.1.0** (FM + AM demodulation, mode switching during stream).
 
 ## Build
 
@@ -26,7 +26,7 @@ cmake --build cmake-build-release-mingw-qt --target Stand
 | LimeSuite | `C:/LimeSuite` | Headers + `LimeSuite.dll` |
 | FFTW3 | `external/FFTW/` | Double precision, static import |
 | QCustomPlot | `external/qcustomplot/` | Bundled source, built as static lib |
-| Catch2 v3.7.1 | `Tests/` | Unit tests for FFT and FM demodulator |
+| Catch2 v3.7.1 | `Tests/` | Unit tests for FFT, FM and AM demodulators |
 
 ## Architecture
 
@@ -42,6 +42,7 @@ main.cpp
               │     └── Pipeline       — broadcasts I/Q blocks to registered handlers:
               │           ├── FftHandler       → spectrum display (30 fps)
               │           ├── FmDemodHandler   → WBFM demod → audio
+              │           ├── AmDemodHandler   → AM envelope demod → audio
               │           ├── RawFileHandler   → .raw I/Q dump
               │           └── BandpassHandler  → filtered WAV export
               └── FmAudioOutput        — resampler + AGC + QAudioSink (WASAPI)
@@ -54,7 +55,7 @@ Core/               Interfaces and infrastructure
   ├── IDevice.h           SDR-agnostic device interface
   ├── IDeviceManager.h    Device discovery interface
   ├── IPipelineHandler.h  Signal processing handler interface
-  ├── Pipeline.h/.cpp     I/Q block router (snapshot-lock pattern)
+  ├── Pipeline.h/.cpp     I/Q block router (shared_mutex reader-writer lock)
   ├── Logger.h/.cpp       Thread-safe singleton logger
   └── LimeException.h     Exception hierarchy for LimeSuite errors
 
@@ -69,6 +70,8 @@ DSP/                Signal processing
   ├── FftHandler.h/.cpp          IPipelineHandler: throttled FFT + EMA smoothing
   ├── FmDemodulator.h/.cpp       Stateful WBFM demodulator (full DSP chain)
   ├── FmDemodHandler.h/.cpp      IPipelineHandler wrapper for FmDemodulator
+  ├── AmDemodulator.h/.cpp       Stateful AM envelope demodulator (full DSP chain)
+  ├── AmDemodHandler.h/.cpp      IPipelineHandler wrapper for AmDemodulator
   ├── BandpassExporter.h/.cpp    NCO + FIR + decimate → WAV writer
   ├── BandpassHandler.h/.cpp     IPipelineHandler wrapper for BandpassExporter
   └── RawFileHandler.h/.cpp      IPipelineHandler: raw int16 I/Q dump
@@ -86,7 +89,7 @@ Application/        UI (Qt widgets only — no DSP, no hardware calls)
 | Thread | Components | Responsibilities |
 |--------|-----------|-----------------|
 | **Main (Qt event loop)** | All widgets, DeviceController, FmAudioOutput | UI updates, audio sink writes, device commands |
-| **StreamWorker (QThread)** | StreamWorker, Pipeline, all IPipelineHandlers | I/Q recv, FFT, FM demod, file I/O |
+| **StreamWorker (QThread)** | StreamWorker, Pipeline, all IPipelineHandlers | I/Q recv, FFT, FM/AM demod, file I/O |
 
 All cross-thread communication uses `Qt::QueuedConnection` signals. No shared mutable state except atomics for pending parameter updates.
 
@@ -106,9 +109,10 @@ virtual void onStreamStopped() {}
 ```
 Called synchronously in StreamWorker thread. Must not block (budget: ~4 ms at 4 MS/s).
 
-**Pipeline** — snapshot-lock router:
-- `addHandler()` / `removeHandler()` thread-safe (mutex)
-- `dispatchBlock()` copies handler list under lock, calls handlers without lock (no stream stall)
+**Pipeline** — reader-writer lock router:
+- `addHandler()` / `removeHandler()` take exclusive (unique_lock) — block until dispatch finishes
+- `dispatchBlock()` / `notifyStarted()` / `notifyStopped()` take shared lock — safe concurrent read
+- This prevents use-after-free when switching demodulator mode during active stream
 
 ## Data flow
 
@@ -156,6 +160,29 @@ LimeDevice::readBlock()  →  Pipeline  →  FmDemodHandler  →  FmDemodulator
                                                       └─ QAudioSink (WASAPI)
 ```
 
+### I/Q → AM audio
+
+```
+LimeDevice::readBlock()  →  Pipeline  →  AmDemodHandler  →  AmDemodulator
+    int16[16384×2]                                              ↓
+                                                    ┌───────────────────────┐
+                                                    │ DC blocker (IIR HP)   │
+                                                    │ NCO freq-shift        │
+                                                    │ FIR1 LPF (255 taps)  │
+                                                    │ Decimate D1           │
+                                                    │ Envelope: sqrt(I²+Q²)│
+                                                    │ DC removal (IIR HP)  │
+                                                    │ FIR2 LPF (255 taps)  │
+                                                    │ Decimate D2=10        │
+                                                    └───────────────────────┘
+                                                              ↓
+                                                    QVector<float> @ 50 kHz
+                                                              ↓ emit audioReady()
+                                                              ↓ QueuedConnection
+                                                    FmAudioOutput::push()
+                                                      (same resampler + AGC path)
+```
+
 ## FM demodulation DSP chain
 
 ```
@@ -167,7 +194,7 @@ int16 I/Q → DC blocker → NCO shift → FIR1 LPF (complex, 255 taps)
          → decimate D2 = 10 → audio @ 50 kHz
 ```
 
-### Parameters
+### FM Parameters
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
@@ -178,6 +205,27 @@ int16 I/Q → DC blocker → NCO shift → FIR1 LPF (complex, 255 taps)
 | FIR2 taps | 255 | Rejects FM stereo subcarrier (23–53 kHz) before D2 |
 | FM max deviation | ±75 kHz | demodGain = ifSR / (2π × 75000) |
 | De-emphasis | 50 µs (EU default) | First-order IIR, fc ≈ 3183 Hz |
+
+## AM demodulation DSP chain
+
+```
+int16 I/Q → DC blocker → NCO shift → FIR1 LPF (complex, 255 taps)
+         → decimate D1 → IF @ 500 kHz
+         → envelope detection: sqrt(I² + Q²)
+         → DC removal (IIR highpass, ~20 Hz)
+         → FIR2 LPF (real, 255 taps, fc ≈ 5 kHz)
+         → decimate D2 = 10 → audio @ 50 kHz
+```
+
+### AM Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| IF target | 500 kHz | Same as FM — shared IF architecture |
+| Audio SR | 50 kHz | IF / D2, FmAudioOutput resampler works as-is |
+| FIR1 bandwidth | 5 kHz (default) | Narrow for AM broadcast, adjustable 1–20 kHz |
+| FIR2 cutoff | ~5 kHz | Audio LPF, matches AM bandwidth |
+| Envelope DC removal | IIR HP ~20 Hz | Removes carrier DC after sqrt() |
 
 ### Why 500 kHz IF (not 250 kHz)
 
@@ -196,9 +244,11 @@ Configuration matches **ExtIO_LimeSDR** (the HDSDR plugin) — known-good refere
 ### Init sequence (LimeDevice::init)
 
 ```
-LMS_Open → LMS_Init → LMS_SetSampleRate(SR, oversample=2)
+LMS_Open → LMS_Init
+→ LMS_GetLOFrequencyRange (log)  → LMS_GetLPFBWRange (log)
+→ LMS_SetSampleRate(SR, oversample=2)
 → LMS_EnableChannel(RX+TX) → LMS_SetAntenna(auto by freq)
-→ LMS_SetLPFBW(SR) [TIA-protected] → LMS_SetLOFrequency
+→ LMS_SetLPFBW(SR) [TIA-protected] → LMS_SetLOFrequency + readback
 → LMS_SetupStream
 ```
 
@@ -211,6 +261,7 @@ LMS_Open → LMS_Init → LMS_SetSampleRate(SR, oversample=2)
 - **Gain to 0 dB before calibration.** Prevents MCU error 5 (LNA loopback at high gain). Gain + TIA restored after.
 - **Antenna auto-select:** LNAW for < 1.5 GHz, LNAH for > 1.5 GHz.
 - **Pending frequency via atomic.** During streaming, `setFrequency()` stores value in `pendingFrequency_` (atomic double). `readBlock()` applies it on the worker thread to avoid USB mutex contention.
+- **LO frequency readback.** After every `LMS_SetLOFrequency`, the actual frequency is read back with `LMS_GetLOFrequency`. A mismatch is logged as a warning — indicates PLL couldn't lock at the requested frequency (observed below ~90 MHz on some units).
 
 ### Gain structure (LimeSDR)
 
@@ -253,11 +304,12 @@ Lists detected LimeSDR devices. Click to open DeviceDetailWindow.
 
 **Device Control** — init, calibrate, sample rate selector, gain slider (0–68 dB).
 
-**FFT / Radio** — spectrum plot + recording + FM controls:
+**FFT / Radio** — spectrum plot + recording + demodulator controls:
 - Spectrum: dark theme, center line (red), filter band overlay (green)
 - Click spectrum to tune VFO, scroll to zoom X-axis, double-click to reset
-- Raw .raw recording toggle
-- Bandpass WAV export (offset, bandwidth, path)
-- FM Radio: bandwidth (50–250 kHz), de-emphasis (50/75 µs), volume
+- Raw .raw recording toggle + filtered WAV export (settings via dialog button)
+- Mode selector: Off / FM / AM — switches demodulator mid-stream without crash
+- FM mode: bandwidth (50–250 kHz), de-emphasis (50/75 µs), volume
+- AM mode: bandwidth (1–20 kHz), volume
 - VFO tuner: absolute station frequency within capture band
 - Signal level bar: SNR indicator (NOISE/MARGINAL/SIGNAL)
