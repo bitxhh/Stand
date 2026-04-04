@@ -17,11 +17,13 @@ set(LIMESUITE_ROOT "C:/LimeSuite")
 include_directories(${LIMESUITE_ROOT}/include)
 link_directories(${LIMESUITE_ROOT}/lib)
 
-# ─── FFTW (double) ────────────────────────────────────────────────────────────
+# ─── FFTW (single precision) ──────────────────────────────────────────────────
 set(FFTW_ROOT        "${CMAKE_SOURCE_DIR}/external/FFTW")
 set(FFTW_INCLUDE_DIR "${FFTW_ROOT}/include")
 set(FFTW_LIB_DIR     "${FFTW_ROOT}/lib")
 set(FFTW_BIN_DIR     "${FFTW_ROOT}/bin")
+
+
 
 # ─── QCustomPlot ──────────────────────────────────────────────────────────────
 set(QCUSTOMPLOT_DIR "${CMAKE_SOURCE_DIR}/external/qcustomplot")
@@ -35,6 +37,8 @@ target_link_libraries(qcustomplot PUBLIC Qt6::Widgets Qt6::PrintSupport)
 if (MINGW)
     target_compile_options(qcustomplot PRIVATE -Wa,-mbig-obj -g0)
 endif ()
+
+set(AVX2_FLAGS -mavx2 -mfma)
 
 # ─── Main executable ──────────────────────────────────────────────────────────
 # Directory layout:
@@ -129,6 +133,8 @@ target_include_directories(Stand PRIVATE
         "${CMAKE_SOURCE_DIR}/Audio"
 )
 
+target_compile_options(Stand PRIVATE ${AVX2_FLAGS})
+
 target_link_libraries(Stand
         PRIVATE
         Qt6::Widgets
@@ -138,7 +144,7 @@ target_link_libraries(Stand
         Qt6::Network
         qcustomplot
         LimeSuite.lib
-        "${FFTW_LIB_DIR}/libfftw3-3.dll.a"
+        "${FFTW_LIB_DIR}/libfftw3f-3.dll.a"
         ${APP_RESOURCES}
 )
 
@@ -152,9 +158,9 @@ add_custom_command(TARGET Stand POST_BUILD
 
 add_custom_command(TARGET Stand POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${FFTW_BIN_DIR}/libfftw3-3.dll"
-        "$<TARGET_FILE_DIR:Stand>/libfftw3-3.dll"
-        COMMENT "Copying FFTW DLL"
+        "${FFTW_BIN_DIR}/libfftw3f-3.dll"
+        "$<TARGET_FILE_DIR:Stand>/libfftw3f-3.dll"
+        COMMENT "Copying FFTW float DLL"
 )
 
 add_custom_command(TARGET Stand POST_BUILD
@@ -195,19 +201,21 @@ target_include_directories(StandTests PRIVATE
         "${FFTW_INCLUDE_DIR}"
 )
 
+target_compile_options(StandTests PRIVATE ${AVX2_FLAGS})
+
 target_link_libraries(StandTests
         PRIVATE
         Catch2::Catch2WithMain
         Qt6::Core
-        "${FFTW_LIB_DIR}/libfftw3-3.dll.a"
+        "${FFTW_LIB_DIR}/libfftw3f-3.dll.a"
 )
 
 # Copy FFTW DLL next to the test binary so it can run on Windows
 add_custom_command(TARGET StandTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${FFTW_BIN_DIR}/libfftw3-3.dll"
-        "$<TARGET_FILE_DIR:StandTests>/libfftw3-3.dll"
-        COMMENT "Copying FFTW DLL for tests"
+        "${FFTW_BIN_DIR}/libfftw3f-3.dll"
+        "$<TARGET_FILE_DIR:StandTests>/libfftw3f-3.dll"
+        COMMENT "Copying FFTW float DLL for tests"
 )
 
 include(Catch)

@@ -19,17 +19,22 @@ constexpr double kPi  = 3.14159265358979323846;
 // ---------------------------------------------------------------------------
 // PlanCache — one FFTW plan per (fftSize, thread).
 // thread_local means no mutex needed; each worker thread owns its cache.
+//
+// Uses single-precision (fftwf_) — ~2× faster than double on AVX2,
+// sufficient accuracy for spectrum display.
+// FFTW_MEASURE: FFTW benchmarks several algorithms on first call (~1 s)
+// and selects the fastest for this CPU. Subsequent calls are faster.
 // ---------------------------------------------------------------------------
 struct CachedPlan {
-    int           size = 0;
-    fftw_complex* in   = nullptr;
-    fftw_complex* out  = nullptr;
-    fftw_plan     plan = nullptr;
+    int            size = 0;
+    fftwf_complex* in   = nullptr;
+    fftwf_complex* out  = nullptr;
+    fftwf_plan     plan = nullptr;
 
     ~CachedPlan() {
-        if (plan) fftw_destroy_plan(plan);
-        if (in)   fftw_free(in);
-        if (out)  fftw_free(out);
+        if (plan) fftwf_destroy_plan(plan);
+        if (in)   fftwf_free(in);
+        if (out)  fftwf_free(out);
     }
     // Non-copyable
     CachedPlan()                             = default;
@@ -47,22 +52,24 @@ CachedPlan& getPlan(int fftSize) {
 
     if (entry.size != fftSize) {
         // Destroy old resources if any
-        if (entry.plan) { fftw_destroy_plan(entry.plan); entry.plan = nullptr; }
-        if (entry.in)   { fftw_free(entry.in);           entry.in   = nullptr; }
-        if (entry.out)  { fftw_free(entry.out);          entry.out  = nullptr; }
+        if (entry.plan) { fftwf_destroy_plan(entry.plan); entry.plan = nullptr; }
+        if (entry.in)   { fftwf_free(entry.in);           entry.in   = nullptr; }
+        if (entry.out)  { fftwf_free(entry.out);          entry.out  = nullptr; }
 
-        entry.in  = reinterpret_cast<fftw_complex*>(
-                        fftw_malloc(sizeof(fftw_complex) * fftSize));
-        entry.out = reinterpret_cast<fftw_complex*>(
-                        fftw_malloc(sizeof(fftw_complex) * fftSize));
+        // fftwf_malloc guarantees SIMD alignment (32-byte for AVX2)
+        entry.in  = reinterpret_cast<fftwf_complex*>(
+                        fftwf_malloc(sizeof(fftwf_complex) * fftSize));
+        entry.out = reinterpret_cast<fftwf_complex*>(
+                        fftwf_malloc(sizeof(fftwf_complex) * fftSize));
 
         if (!entry.in || !entry.out)
             throw std::runtime_error("FFTW malloc failed for size " + std::to_string(fftSize));
 
-        // FFTW_MEASURE would be faster at runtime but takes seconds on first call.
-        // FFTW_ESTIMATE is "good enough" for real-time display.
-        entry.plan = fftw_plan_dft_1d(fftSize, entry.in, entry.out,
-                                       FFTW_FORWARD, FFTW_ESTIMATE);
+        // FFTW_MEASURE: benchmarks algorithms on first call (~1 s per size),
+        // then reuses the winner for every subsequent execute — worthwhile
+        // for a long-running real-time app.
+        entry.plan = fftwf_plan_dft_1d(fftSize, entry.in, entry.out,
+                                        FFTW_FORWARD, FFTW_MEASURE);
         if (!entry.plan)
             throw std::runtime_error("FFTW plan creation failed");
 
@@ -71,14 +78,14 @@ CachedPlan& getPlan(int fftSize) {
     return entry;
 }
 
-// Hann window — cached per size alongside the plan.
-const std::vector<double>& getHannWindow(int n) {
-    thread_local std::unordered_map<int, std::vector<double>> wCache;
+// Hann window coefficients — float, cached per size alongside the plan.
+const std::vector<float>& getHannWindow(int n) {
+    thread_local std::unordered_map<int, std::vector<float>> wCache;
     auto& w = wCache[n];
     if (static_cast<int>(w.size()) != n) {
         w.resize(n);
         for (int i = 0; i < n; ++i)
-            w[i] = 0.5 * (1.0 - std::cos(2.0 * kPi * i / (n - 1)));
+            w[i] = 0.5f * (1.0f - std::cos(static_cast<float>(2.0 * kPi * i / (n - 1))));
     }
     return w;
 }
@@ -100,15 +107,15 @@ FftFrame FftProcessor::process(const QVector<int16_t>& iqSamples,
     auto& cp     = getPlan(fftSize);
     auto& window = getHannWindow(fftSize);
 
-    // ── Fill input buffer ────────────────────────────────────────────────────
+    // ── Fill input buffer (float) ────────────────────────────────────────────
     for (int i = 0; i < fftSize; ++i) {
-        const double w = window[i];
-        cp.in[i][0] = static_cast<double>(iqSamples[2 * i])     / 32768.0 * w;
-        cp.in[i][1] = static_cast<double>(iqSamples[2 * i + 1]) / 32768.0 * w;
+        const float w = window[i];
+        cp.in[i][0] = static_cast<float>(iqSamples[2 * i])     / 32768.0f * w;
+        cp.in[i][1] = static_cast<float>(iqSamples[2 * i + 1]) / 32768.0f * w;
     }
 
     // ── Execute (reuses preallocated buffers and plan) ────────────────────────
-    fftw_execute(cp.plan);
+    fftwf_execute(cp.plan);
 
     // ── Build output frame with FFT-shift (DC in centre) ────────────────────
     FftFrame frame;
@@ -120,16 +127,15 @@ FftFrame FftProcessor::process(const QVector<int16_t>& iqSamples,
 
     // Coherent normalization: divide by sum(window)^2 so that a full-scale
     // complex sine reads 0 dBFS regardless of FFT size or window shape.
-    // sum(Hann) ≈ N/2, so this corrects the +36 dB offset from dividing by N.
-    double winSum = 0.0;
-    for (double w : window) winSum += w;
-    const double normSq = winSum * winSum;
+    float winSum = 0.0f;
+    for (float w : window) winSum += w;
+    const double normSq = static_cast<double>(winSum) * static_cast<double>(winSum);
 
     for (int k = 0; k < fftSize; ++k) {
         // FFT-shift: map output bin index to "DC-centred" display index
-        const int shifted = (k + fftSize / 2) % fftSize;
-        const double re   = cp.out[shifted][0];
-        const double im   = cp.out[shifted][1];
+        const int    shifted = (k + fftSize / 2) % fftSize;
+        const double re      = static_cast<double>(cp.out[shifted][0]);
+        const double im      = static_cast<double>(cp.out[shifted][1]);
 
         frame.powerDb[k] = 10.0 * std::log10((re * re + im * im) / normSq + kEps);
         frame.freqMHz[k] = startFreqMHz + (static_cast<double>(k) * binWidthHz) / 1e6;
