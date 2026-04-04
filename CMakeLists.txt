@@ -75,6 +75,8 @@ add_executable(Stand
         DSP/DspUtils.h
         DSP/BaseDemodulator.cpp
         DSP/BaseDemodulator.h
+        DSP/BaseDemodHandler.cpp
+        DSP/BaseDemodHandler.h
         DSP/FmDemodulator.cpp
         DSP/FmDemodulator.h
         DSP/FmDemodHandler.cpp
@@ -83,6 +85,9 @@ add_executable(Stand
         DSP/AmDemodulator.h
         DSP/AmDemodHandler.cpp
         DSP/AmDemodHandler.h
+        DSP/DemodTypes.h
+        DSP/DemodRegistry.cpp
+        DSP/DemodRegistry.h
         DSP/RawFileHandler.cpp
         DSP/RawFileHandler.h
 

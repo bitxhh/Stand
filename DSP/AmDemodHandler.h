@@ -1,14 +1,12 @@
 #pragma once
 
-#include "../Core/IPipelineHandler.h"
-#include "AmDemodulator.h"
+#include "BaseDemodHandler.h"
 
-#include <QObject>
-#include <QVector>
-#include <atomic>
-#include <memory>
-
-class AmDemodHandler : public QObject, public IPipelineHandler {
+// ---------------------------------------------------------------------------
+// AmDemodHandler — AM envelope handler.
+// Params: Bandwidth (1–20 kHz).
+// ---------------------------------------------------------------------------
+class AmDemodHandler : public BaseDemodHandler {
     Q_OBJECT
 
 public:
@@ -16,24 +14,15 @@ public:
                             double bandwidthHz     = 5'000.0,
                             QObject* parent        = nullptr);
 
-    void setBandwidth(double hz);
-    void setOffset(double hz);
+    std::vector<demod::ParamDesc> paramDescriptors() const override;
 
-    [[nodiscard]] double snrDb() const { return dem_ ? dem_->snrDb() : 0.0; }
-    [[nodiscard]] double ifRms() const { return dem_ ? dem_->ifRms() : 0.0; }
+protected:
+    std::unique_ptr<BaseDemodulator>
+    createDemodulator(double sampleRateHz, double offsetHz,
+                      const std::map<QString, double>& params) override;
 
-    void processBlock(const int16_t* iq, int count, double sampleRateHz) override;
-    void onStreamStarted(double sampleRateHz) override;
-    void onStreamStopped() override;
+    void applyParam(BaseDemodulator& dem,
+                    const QString& name, double value) override;
 
-signals:
-    void audioReady(QVector<float> samples, double sampleRateHz);
-
-private:
-    double stationOffsetHz_;
-    double bandwidthHz_;
-
-    std::unique_ptr<AmDemodulator> dem_;
-    std::atomic<double> pendingBw_{0.0};
-    std::atomic<double> pendingOffset_{1e38};
+    const char* handlerName() const override { return "AmDemodHandler"; }
 };

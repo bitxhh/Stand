@@ -1,60 +1,47 @@
 #include "FmDemodHandler.h"
-#include "Logger.h"
+#include "FmDemodulator.h"
 
 FmDemodHandler::FmDemodHandler(double stationOffsetHz,
                                double deemphTauSec,
                                double bandwidthHz,
                                QObject* parent)
-    : QObject(parent)
-    , stationOffsetHz_(stationOffsetHz)
-    , deemphTauSec_(deemphTauSec)
-    , bandwidthHz_(bandwidthHz)
-{}
-
-void FmDemodHandler::setBandwidth(double hz) {
-    pendingBw_.store(hz);
+    : BaseDemodHandler(stationOffsetHz, parent)
+{
+    setParam(QStringLiteral("Bandwidth"), bandwidthHz);
+    setParam(QStringLiteral("De-emphasis"), deemphTauSec);
 }
 
-void FmDemodHandler::setOffset(double hz) {
-    pendingOffset_.store(hz);
+std::vector<demod::ParamDesc> FmDemodHandler::paramDescriptors() const {
+    return {
+        demod::SpinParam{
+            QStringLiteral("Bandwidth"),
+            50, 250, 150,
+            QStringLiteral(" kHz"), 10, 1000.0
+        },
+        demod::ComboParam{
+            QStringLiteral("De-emphasis"),
+            {{QStringLiteral("50 µs (EU)"), 50e-6},
+             {QStringLiteral("75 µs (US)"), 75e-6}},
+            1  // default: 75 µs
+        }
+    };
 }
 
-void FmDemodHandler::onStreamStarted(double sampleRateHz) {
-    try {
-        dem_ = std::make_unique<FmDemodulator>(
-            sampleRateHz, stationOffsetHz_, deemphTauSec_, bandwidthHz_);
-        LOG_INFO("FmDemodHandler: ready — audio SR="
-                 + std::to_string(static_cast<int>(dem_->audioSampleRate())) + " Hz");
-    } catch (const std::exception& ex) {
-        LOG_ERROR(std::string("FmDemodHandler init failed: ") + ex.what());
-        dem_.reset();
-    }
+std::unique_ptr<BaseDemodulator>
+FmDemodHandler::createDemodulator(double sampleRateHz, double offsetHz,
+                                  const std::map<QString, double>& params) {
+    auto get = [&](const QString& k, double def) {
+        auto it = params.find(k);
+        return it != params.end() ? it->second : def;
+    };
+    const double bw  = get(QStringLiteral("Bandwidth"),   150'000.0);
+    const double tau = get(QStringLiteral("De-emphasis"),  75e-6);
+    return std::make_unique<FmDemodulator>(sampleRateHz, offsetHz, tau, bw);
 }
 
-void FmDemodHandler::onStreamStopped() {
-    dem_.reset();
-}
-
-void FmDemodHandler::processBlock(const int16_t* iq, int count, double sampleRateHz) {
-    // Lazy-init: handler may have been added mid-stream via pipeline_->addHandler(),
-    // in which case onStreamStarted() was never called for it.
-    if (!dem_) {
-        onStreamStarted(sampleRateHz);
-        if (!dem_) return;
-    }
-
-    // Применяем ожидающее изменение полосы
-    const double pending = pendingBw_.exchange(0.0);
-    if (pending > 0.0)
-        dem_->setBandwidth(pending);
-
-    // Применяем ожидающую перестройку VFO (sentinel 1e38 = нет изменений)
-    const double pendingOff = pendingOffset_.exchange(1e38);
-    if (pendingOff < 1e37)
-        dem_->setOffset(pendingOff);
-
-    const QVector<int16_t> block(iq, iq + count * 2);
-    const QVector<float> audio = dem_->pushBlock(block);
-    if (!audio.isEmpty())
-        emit audioReady(audio, dem_->audioSampleRate());
+void FmDemodHandler::applyParam(BaseDemodulator& dem,
+                                const QString& name, double value) {
+    if (name == QLatin1String("Bandwidth"))
+        static_cast<FmDemodulator&>(dem).setBandwidth(value);
+    // De-emphasis: takes effect on next stream start (IIR recalc needs rebuild)
 }

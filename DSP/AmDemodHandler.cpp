@@ -1,54 +1,34 @@
 #include "AmDemodHandler.h"
-#include "Logger.h"
+#include "AmDemodulator.h"
 
 AmDemodHandler::AmDemodHandler(double stationOffsetHz,
                                double bandwidthHz,
                                QObject* parent)
-    : QObject(parent)
-    , stationOffsetHz_(stationOffsetHz)
-    , bandwidthHz_(bandwidthHz)
-{}
-
-void AmDemodHandler::setBandwidth(double hz) {
-    pendingBw_.store(hz);
+    : BaseDemodHandler(stationOffsetHz, parent)
+{
+    setParam(QStringLiteral("Bandwidth"), bandwidthHz);
 }
 
-void AmDemodHandler::setOffset(double hz) {
-    pendingOffset_.store(hz);
+std::vector<demod::ParamDesc> AmDemodHandler::paramDescriptors() const {
+    return {
+        demod::SpinParam{
+            QStringLiteral("Bandwidth"),
+            1, 20, 5,
+            QStringLiteral(" kHz"), 1, 1000.0
+        }
+    };
 }
 
-void AmDemodHandler::onStreamStarted(double sampleRateHz) {
-    try {
-        dem_ = std::make_unique<AmDemodulator>(
-            sampleRateHz, stationOffsetHz_, bandwidthHz_);
-        LOG_INFO("AmDemodHandler: ready — audio SR="
-                 + std::to_string(static_cast<int>(dem_->audioSampleRate())) + " Hz");
-    } catch (const std::exception& ex) {
-        LOG_ERROR(std::string("AmDemodHandler init failed: ") + ex.what());
-        dem_.reset();
-    }
+std::unique_ptr<BaseDemodulator>
+AmDemodHandler::createDemodulator(double sampleRateHz, double offsetHz,
+                                  const std::map<QString, double>& params) {
+    auto it = params.find(QStringLiteral("Bandwidth"));
+    const double bw = (it != params.end()) ? it->second : 5'000.0;
+    return std::make_unique<AmDemodulator>(sampleRateHz, offsetHz, bw);
 }
 
-void AmDemodHandler::onStreamStopped() {
-    dem_.reset();
-}
-
-void AmDemodHandler::processBlock(const int16_t* iq, int count, double sampleRateHz) {
-    if (!dem_) {
-        onStreamStarted(sampleRateHz);
-        if (!dem_) return;
-    }
-
-    const double pending = pendingBw_.exchange(0.0);
-    if (pending > 0.0)
-        dem_->setBandwidth(pending);
-
-    const double pendingOff = pendingOffset_.exchange(1e38);
-    if (pendingOff < 1e37)
-        dem_->setOffset(pendingOff);
-
-    const QVector<int16_t> block(iq, iq + count * 2);
-    const QVector<float> audio = dem_->pushBlock(block);
-    if (!audio.isEmpty())
-        emit audioReady(audio, dem_->audioSampleRate());
+void AmDemodHandler::applyParam(BaseDemodulator& dem,
+                                const QString& name, double value) {
+    if (name == QLatin1String("Bandwidth"))
+        static_cast<AmDemodulator&>(dem).setBandwidth(value);
 }
