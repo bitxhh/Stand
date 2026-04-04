@@ -71,6 +71,10 @@ add_executable(Stand
         DSP/BandpassExporter.h
         DSP/BandpassHandler.cpp
         DSP/BandpassHandler.h
+        DSP/DspUtils.cpp
+        DSP/DspUtils.h
+        DSP/BaseDemodulator.cpp
+        DSP/BaseDemodulator.h
         DSP/FmDemodulator.cpp
         DSP/FmDemodulator.h
         DSP/FmDemodHandler.cpp
@@ -154,6 +158,8 @@ add_executable(StandTests
         Tests/test_amdemod.cpp
         Tests/test_fftprocessor.cpp
 
+        DSP/DspUtils.cpp
+        DSP/BaseDemodulator.cpp
         DSP/FmDemodulator.cpp
         DSP/AmDemodulator.cpp
         DSP/FftProcessor.cpp

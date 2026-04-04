@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "AmDemodulator.h"
+#include "DspUtils.h"
 
 #include <cmath>
 #include <complex>
@@ -129,7 +130,7 @@ TEST_CASE("AM: audio sample count matches D1*D2 decimation", "[am][chain]") {
 // AM-T4 — FIR design sanity (reuses same design function)
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_CASE("AM FIR design: DC gain = 1.0", "[am][fir]") {
-    const auto h = AmDemodulator::designLowpassFir(31, 0.05);
+    const auto h = dsp::designLowpassFir(31, 0.05);
     double dcGain = 0.0;
     for (double c : h) dcGain += c;
     CHECK_THAT(dcGain, Catch::Matchers::WithinAbs(1.0, 1e-6));

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DspUtils.h"
+
 #include <QVector>
 #include <QString>
 #include <cstdint>
@@ -73,9 +75,7 @@ private:
     int firHead_{0};
 
     // ── Frequency-shift NCO ──────────────────────────────────────────────────
-    // Tracks the running phase so shifts are continuous across blocks.
-    double ncoPhase_{0.0};
-    double ncoPhaseIncrement_;   // = -2π * stationOffset / inputSR  (negative = shift down)
+    dsp::Nco nco_;
 
     // ── Decimation state ─────────────────────────────────────────────────────
     int decimationCounter_{0};
@@ -85,7 +85,6 @@ private:
     int64_t samplesWritten_{0};   // number of (I,Q) pairs written
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-    static std::vector<double> designLowpassFir(int numTaps, double cutoffNorm);
     std::complex<double>       filterSample(std::complex<double> x);
 
     void writeWavHeader(int64_t numSamples);   // written at open() and patched at close()

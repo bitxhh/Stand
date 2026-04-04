@@ -8,7 +8,6 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-static constexpr double kPi      = 3.14159265358979323846;
 static constexpr int    kFirTaps = 127;   // odd → symmetric, linear phase
 
 // ---------------------------------------------------------------------------
@@ -42,53 +41,17 @@ BandpassExporter::BandpassExporter(double inputSampleRateHz,
     const double cutoff = std::min(bandwidth_,
                                    outputSR_ / 2.0 * 0.9);
     const double cutoffNorm = cutoff / inputSR_;   // fc/fs ∈ [0, 0.5]
-    firCoeffs_    = designLowpassFir(kFirTaps, cutoffNorm);
+    firCoeffs_    = dsp::designLowpassFir(kFirTaps, cutoffNorm);
     firDelayLine_.assign(kFirTaps, {0.0, 0.0});
 
     // ── NCO ──────────────────────────────────────────────────────────────────
-    // Negative sign: to shift a signal at +offset to DC, multiply by e^{-j2π·offset·n/SR}.
-    ncoPhaseIncrement_ = -2.0 * kPi * stationOffset_ / inputSR_;
+    nco_.setFrequency(stationOffset_, inputSR_);
 
     LOG_INFO("BandpassExporter: SR=" + std::to_string(inputSR_)
              + " offset=" + std::to_string(stationOffset_)
              + " BW=" + std::to_string(bandwidth_)
              + " outSR=" + std::to_string(outputSR_)
              + " decimation=" + std::to_string(decimation_));
-}
-
-// ---------------------------------------------------------------------------
-// FIR design — windowed sinc (Blackman window for high stopband attenuation)
-// ---------------------------------------------------------------------------
-std::vector<double> BandpassExporter::designLowpassFir(int numTaps, double cutoffNorm) {
-    std::vector<double> h(numTaps);
-    const int M = numTaps - 1;   // filter order
-    const int mid = M / 2;
-
-    for (int n = 0; n < numTaps; ++n) {
-        // Ideal sinc lowpass
-        double sinc;
-        if (n == mid) {
-            sinc = 2.0 * cutoffNorm;   // limit of sinc at 0
-        } else {
-            const double x = 2.0 * kPi * cutoffNorm * (n - mid);
-            sinc = std::sin(x) / (kPi * (n - mid));
-        }
-
-        // Blackman window: -74 dB stopband, good for SDR use
-        const double window = 0.42
-                            - 0.50 * std::cos(2.0 * kPi * n / M)
-                            + 0.08 * std::cos(4.0 * kPi * n / M);
-
-        h[n] = sinc * window;
-    }
-
-    // Normalise to unity passband gain
-    double sum = 0.0;
-    for (double v : h) sum += v;
-    if (sum > 0.0)
-        for (double& v : h) v /= sum;
-
-    return h;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +83,7 @@ bool BandpassExporter::open(const QString& path) {
     }
     samplesWritten_   = 0;
     decimationCounter_ = 0;
-    ncoPhase_          = 0.0;
+    nco_.reset();
     firDelayLine_.assign(kFirTaps, {0.0, 0.0});
     firHead_ = 0;
 
@@ -154,12 +117,8 @@ void BandpassExporter::pushBlock(const QVector<int16_t>& iqBlock) {
         const double qVal = static_cast<double>(iqBlock[2 * i + 1]) / 32768.0;
         std::complex<double> sample{iVal, qVal};
 
-        // ── 2. Frequency shift: multiply by e^{j·phase} ─────────────────────
-        //    Wraps phase to [-π, π] every block to prevent floating-point drift.
-        sample *= std::complex<double>(std::cos(ncoPhase_), std::sin(ncoPhase_));
-        ncoPhase_ += ncoPhaseIncrement_;
-        if (ncoPhase_ >  kPi) ncoPhase_ -= 2.0 * kPi;
-        if (ncoPhase_ < -kPi) ncoPhase_ += 2.0 * kPi;
+        // ── 2. Frequency shift ──────────────────────────────────────────────
+        sample = nco_.mix(sample);
 
         // ── 3. FIR lowpass ───────────────────────────────────────────────────
         const auto filtered = filterSample(sample);

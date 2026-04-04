@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "FmDemodulator.h"
+#include "DspUtils.h"
 
 #include <cmath>
 #include <complex>
@@ -71,7 +72,7 @@ static QVector<float> runDemod(FmDemodulator& dem,
 TEST_CASE("FIR design: DC gain = 1.0", "[fir]") {
     // Passband sum of a properly normalised lowpass FIR = 1.0 (DC passes unchanged)
     for (int taps : {31, 63, 127}) {
-        const auto h = FmDemodulator::designLowpassFir(taps, 0.1);
+        const auto h = dsp::designLowpassFir(taps, 0.1);
         REQUIRE(static_cast<int>(h.size()) == taps);
 
         double dcGain = 0.0;
@@ -81,14 +82,14 @@ TEST_CASE("FIR design: DC gain = 1.0", "[fir]") {
 }
 
 TEST_CASE("FIR design: coefficients are symmetric (linear phase)", "[fir]") {
-    const auto h = FmDemodulator::designLowpassFir(31, 0.1);
+    const auto h = dsp::designLowpassFir(31, 0.1);
     for (int i = 0; i < 15; ++i)
         CHECK_THAT(h[i], Catch::Matchers::WithinAbs(h[30 - i], 1e-12));
 }
 
 TEST_CASE("FIR design: stopband attenuation >= 40 dB", "[fir]") {
     // cutoff = 0.1 (normalised); evaluate at 0.3 (well into stopband)
-    const auto h = FmDemodulator::designLowpassFir(63, 0.1);
+    const auto h = dsp::designLowpassFir(63, 0.1);
     const double omega = 2.0 * kPi * 0.3;   // stopband frequency
     double re = 0.0, im = 0.0;
     for (int n = 0; n < static_cast<int>(h.size()); ++n) {
