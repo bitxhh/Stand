@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Core/ChannelDescriptor.h"
 #include <QObject>
 #include <atomic>
 #include <cstdint>
@@ -23,7 +24,10 @@ class StreamWorker : public QObject {
     Q_OBJECT
 
 public:
-    StreamWorker(IDevice* device, Pipeline* pipeline, QObject* parent = nullptr);
+    // channel defaults to {RX, 0} — single-channel callers (AppController) unchanged.
+    StreamWorker(IDevice* device, Pipeline* pipeline,
+                 ChannelDescriptor channel = {},
+                 QObject* parent = nullptr);
 
 public slots:
     void run();
@@ -38,6 +42,7 @@ signals:
 private:
     IDevice*          device_;
     Pipeline*         pipeline_;
+    ChannelDescriptor channel_{};
     std::atomic<bool> running_{false};
 
     // 16384 = 2^14: FFTW fast radix-2, помещается в USB transfer limit при любом SR.

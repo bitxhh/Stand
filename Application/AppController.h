@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Core/ChannelDescriptor.h"
 #include "../Core/Pipeline.h"
 #include "../DSP/FftHandler.h"
 #include "../DSP/BaseDemodHandler.h"
@@ -36,7 +37,10 @@ public:
         double  demodOffsetHz{0.0};
     };
 
-    explicit AppController(IDevice* device, QObject* parent = nullptr);
+    // channel defaults to {RX, 0} — backward-compatible with existing callers.
+    explicit AppController(IDevice* device,
+                           ChannelDescriptor channel = {},
+                           QObject* parent = nullptr);
     ~AppController() override;
 
     // ── Stream lifecycle ─────────────────────────────────────────────────────
@@ -53,6 +57,11 @@ public:
 
     // ── FFT ──────────────────────────────────────────────────────────────────
     void setFftCenterFreq(double mhz);
+
+    // ── Extra handlers (e.g. ClassifierHandler) ──────────────────────────────
+    // Safe to call any time; no-op if pipeline is not running.
+    void addExtraHandler(IPipelineHandler* h);
+    void removeExtraHandler(IPipelineHandler* h);
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     [[nodiscard]] BaseDemodHandler* demodHandler() const { return demodHandler_; }
@@ -71,6 +80,7 @@ private:
     void onStreamFinishedInternal();
 
     IDevice*          device_;
+    ChannelDescriptor channel_{};
     Pipeline*         pipeline_{nullptr};
     QThread*          streamThread_{nullptr};
     StreamWorker*     streamWorker_{nullptr};
@@ -79,6 +89,7 @@ private:
     FmAudioOutput*    audioOut_{nullptr};
     float             volume_{0.8f};
 
-    std::vector<RawFileHandler*>  rawHandlers_;
-    std::vector<BandpassHandler*> wavHandlers_;
+    std::vector<RawFileHandler*>   rawHandlers_;
+    std::vector<BandpassHandler*>  wavHandlers_;
+    std::vector<IPipelineHandler*> extraHandlers_;
 };

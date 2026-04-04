@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <QCoreApplication>
 #include <QSize>
 #include <QFileDialog>
 #include <QStandardPaths>
 #include "qcustomplot.h"
+#include "../Core/ChannelDescriptor.h"
+#include "TxController.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DeviceDetailWindow — constructor
@@ -40,9 +43,11 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     auto* infoItem    = new QListWidgetItem("Device info",    functionList);
     auto* controlItem = new QListWidgetItem("Device control", functionList);
     auto* fftItem     = new QListWidgetItem("FFT",            functionList);
+    auto* txNavItem   = new QListWidgetItem("Transmit",       functionList);
     infoItem->setSizeHint(QSize(0, 48));
     controlItem->setSizeHint(QSize(0, 48));
     fftItem->setSizeHint(QSize(0, 48));
+    txNavItem->setSizeHint(QSize(0, 48));
 
     contentStack = new QStackedWidget(central);
     contentStack->addWidget(new QWidget(contentStack));
@@ -50,15 +55,18 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     deviceInfoPage    = createDeviceInfoPage();
     deviceControlPage = createDeviceControlPage();
     deviceFFTpage     = createDeviceFFTpage();
+    txPage_           = createTxPage();
     contentStack->addWidget(deviceInfoPage);
     contentStack->addWidget(deviceControlPage);
     contentStack->addWidget(deviceFFTpage);
+    contentStack->addWidget(txPage_);
 
     connect(functionList, &QListWidget::itemClicked, this,
-        [this, infoItem, controlItem, fftItem](QListWidgetItem* item) {
+        [this, infoItem, controlItem, fftItem, txNavItem](QListWidgetItem* item) {
             if      (item == infoItem)    contentStack->setCurrentWidget(deviceInfoPage);
             else if (item == controlItem) contentStack->setCurrentWidget(deviceControlPage);
             else if (item == fftItem)     contentStack->setCurrentWidget(deviceFFTpage);
+            else if (item == txNavItem)   contentStack->setCurrentWidget(txPage_);
         });
 
     functionList->clearSelection();
@@ -71,8 +79,8 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     mainLayout->addWidget(splitter);
     setCentralWidget(central);
 
-    // ── App controller (non-UI: pipeline, handlers, audio, worker thread) ────
-    ctrl_ = new AppController(this->device.get(), this);
+    // ── App controllers (non-UI: pipeline, handlers, audio, worker thread) ───
+    ctrl_ = new AppController(this->device.get(), ChannelDescriptor{}, this);
 
     connect(ctrl_, &AppController::fftReady,
             this,  &DeviceDetailWindow::onFftReady, Qt::QueuedConnection);
@@ -80,6 +88,79 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
             this,  &DeviceDetailWindow::onStreamError, Qt::QueuedConnection);
     connect(ctrl_, &AppController::streamFinished,
             this,  &DeviceDetailWindow::onStreamFinished, Qt::QueuedConnection);
+
+    // RX1 controller — idle until dual RX is enabled
+    ctrl1_ = new AppController(this->device.get(),
+                               ChannelDescriptor{ChannelDescriptor::RX, 1}, this);
+    connect(ctrl1_, &AppController::fftReady,
+            this,   &DeviceDetailWindow::onFftReady1, Qt::QueuedConnection);
+    connect(ctrl1_, &AppController::streamError,
+            this,   &DeviceDetailWindow::onStreamError, Qt::QueuedConnection);
+
+    // TX controller
+    txCtrl_ = new TxController(this->device.get(),
+                               ChannelDescriptor{ChannelDescriptor::TX, 0}, this);
+    connect(txCtrl_, &TxController::txStatus, this,
+            [this](const QString& msg) {
+                if (txStatusLabel_) txStatusLabel_->setText(msg);
+            }, Qt::QueuedConnection);
+    connect(txCtrl_, &TxController::txError, this,
+            [this](const QString& err) {
+                if (txStatusLabel_) {
+                    txStatusLabel_->setStyleSheet("color: #ff4444;");
+                    txStatusLabel_->setText("Error: " + err);
+                }
+                if (txStartButton_) txStartButton_->setEnabled(true);
+                if (txStopButton_)  txStopButton_->setEnabled(false);
+                QMessageBox::critical(this, "TX error", err);
+            }, Qt::QueuedConnection);
+    connect(txCtrl_, &TxController::txFinished, this,
+            [this]() {
+                if (txStatusLabel_) {
+                    txStatusLabel_->setStyleSheet("color: gray;");
+                    txStatusLabel_->setText("Idle");
+                }
+                if (txStartButton_) txStartButton_->setEnabled(true);
+                if (txStopButton_)  txStopButton_->setEnabled(false);
+            }, Qt::QueuedConnection);
+
+    // Classifier controller
+    classifierCtrl_ = new ClassifierController(ctrl_, this);
+    connect(classifierCtrl_, &ClassifierController::classifierStarted, this,
+            [this]() {
+                if (classifierLabel_) {
+                    classifierLabel_->setStyleSheet("color: #00cc44; font-size: 11px;");
+                    classifierLabel_->setText("Ready");
+                }
+            });
+    connect(classifierCtrl_, &ClassifierController::classifierStopped, this,
+            [this]() {
+                if (classifierLabel_) {
+                    classifierLabel_->setStyleSheet("color: gray; font-size: 11px;");
+                    classifierLabel_->setText("Unavailable");
+                }
+                if (classifierCheck_) {
+                    QSignalBlocker b(classifierCheck_);
+                    classifierCheck_->setChecked(false);
+                }
+            });
+    connect(classifierCtrl_, &ClassifierController::classifierError, this,
+            [this](const QString& msg) {
+                if (classifierLabel_) {
+                    classifierLabel_->setStyleSheet("color: #ffaa00; font-size: 11px;");
+                    classifierLabel_->setText(msg);
+                }
+            });
+    connect(classifierCtrl_, &ClassifierController::classificationReady, this,
+            [this](const QString& type, double confidence) {
+                if (classifierLabel_) {
+                    classifierLabel_->setStyleSheet("color: #00cc44; font-size: 11px;");
+                    classifierLabel_->setText(
+                        QString("%1  %2%").arg(type)
+                                         .arg(static_cast<int>(confidence * 100)));
+                }
+            });
+
     connect(ctrl_, &AppController::demodStatus, this,
             [this](const QString& msg, bool isError) {
                 demodStatusLabel_->setStyleSheet(
@@ -164,12 +245,15 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
             controller_, &DeviceController::initDevice);
 
     connect(calibrateButton, &QPushButton::clicked, this, [this]() {
+        stopAllStreams();
         controller_->calibrate(sampleRateSelector->currentData().toDouble());
     });
 
     connect(sampleRateSelector, &QComboBox::currentIndexChanged, this, [this]() {
-        if (controller_->isInitialized())
+        if (controller_->isInitialized()) {
+            stopAllStreams();
             controller_->setSampleRate(sampleRateSelector->currentData().toDouble());
+        }
     });
 
     // Single gain slider — LimeSuite distributes across LNA+PGA automatically.
@@ -231,8 +315,62 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
 
     // ── Spectrum plot ─────────────────────────────────────────────────────────
     fftPlot = new QCustomPlot(page);
-    fftPlot->setMinimumHeight(300);
+    fftPlot->setMinimumHeight(200);
     setupFftPlot();
+
+    // ── Dual RX toggle + RX1 frequency ───────────────────────────────────────
+    auto* dualRxRow  = new QWidget(page);
+    auto* dualRxHlay = new QHBoxLayout(dualRxRow);
+    dualRxHlay->setContentsMargins(0, 0, 0, 0);
+
+    dualRxCheck_ = new QCheckBox("Dual RX", dualRxRow);
+    dualRxCheck_->setToolTip("Enable second RX channel (RX1) with independent tuning");
+
+    auto* freq1Label = new QLabel("RX1 (MHz):", dualRxRow);
+    freqSpinBox1_ = new QDoubleSpinBox(dualRxRow);
+    freqSpinBox1_->setRange(kFreqMinMHz, kFreqMaxMHz);
+    freqSpinBox1_->setDecimals(3);
+    freqSpinBox1_->setSingleStep(0.1);
+    freqSpinBox1_->setValue(kFreqDefaultMHz);
+    freqSpinBox1_->setFixedWidth(110);
+    auto* applyFreq1Btn = new QPushButton("Apply", dualRxRow);
+    applyFreq1Btn->setFixedWidth(60);
+
+    freq1Label->hide(); freqSpinBox1_->hide(); applyFreq1Btn->hide();
+    dualRxHlay->addWidget(dualRxCheck_);
+    dualRxHlay->addSpacing(8);
+    dualRxHlay->addWidget(freq1Label);
+    dualRxHlay->addWidget(freqSpinBox1_);
+    dualRxHlay->addWidget(applyFreq1Btn);
+    dualRxHlay->addStretch();
+
+    connect(dualRxCheck_, &QCheckBox::toggled, this,
+            [this, freq1Label, applyFreq1Btn](bool on) {
+        freq1Label->setVisible(on);
+        freqSpinBox1_->setVisible(on);
+        applyFreq1Btn->setVisible(on);
+        onDualRxToggled(on);
+    });
+
+    auto applyFreq1 = [this]() {
+        if (!controller_->isInitialized()) return;
+        const double mhz = freqSpinBox1_->value();
+        controller_->setFrequencyChannel({ChannelDescriptor::RX, 1}, mhz);
+        ctrl1_->setFftCenterFreq(mhz);
+        if (centerLine1_) {
+            centerLine1_->start->setCoords(mhz, -130.0);
+            centerLine1_->end->setCoords  (mhz,   10.0);
+            fftPlot1_->replot(QCustomPlot::rpQueuedReplot);
+        }
+    };
+    connect(applyFreq1Btn, &QPushButton::clicked,            this, applyFreq1);
+    connect(freqSpinBox1_, &QDoubleSpinBox::editingFinished, this, applyFreq1);
+
+    // ── RX1 spectrum plot (hidden until dual RX enabled) ─────────────────────
+    fftPlot1_ = new QCustomPlot(page);
+    fftPlot1_->setMinimumHeight(180);
+    setupFftPlot1();
+    fftPlot1_->hide();
 
     // ── Frequency control ─────────────────────────────────────────────────────
     auto* freqRow  = new QWidget(page);
@@ -484,14 +622,197 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     layout->addWidget(title);
     layout->addSpacing(4);
     layout->addWidget(fftPlot, 1);
+    layout->addWidget(dualRxRow);
+    layout->addWidget(fftPlot1_, 1);
     layout->addWidget(freqRow);
     layout->addWidget(recordRow);
     layout->addWidget(demodRow);
     layout->addWidget(vfoRow);
     layout->addWidget(levelRow);
     layout->addWidget(demodStatusLabel_);
+
+    // ── Classifier row ────────────────────────────────────────────────────────
+    auto* clsRow  = new QWidget(page);
+    auto* clsHlay = new QHBoxLayout(clsRow);
+    clsHlay->setContentsMargins(0, 0, 0, 0);
+
+    classifierCheck_ = new QCheckBox("Classifier", clsRow);
+    classifierCheck_->setToolTip(
+        "Enable Python NN signal classifier.\n"
+        "Requires Python + classifier_service.py.\n"
+        "Path configured via STAND_PYTHON_EXE / STAND_CLASSIFIER_SCRIPT env vars\n"
+        "or defaults: python3 / Python/classifier_service.py");
+
+    classifierLabel_ = new QLabel("Unavailable", clsRow);
+    classifierLabel_->setStyleSheet("color: gray; font-size: 11px;");
+
+    clsHlay->addWidget(classifierCheck_);
+    clsHlay->addSpacing(8);
+    clsHlay->addWidget(classifierLabel_);
+    clsHlay->addStretch();
+
+    connect(classifierCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        if (on) {
+            const QString pyExe    = qEnvironmentVariable("STAND_PYTHON_EXE",    "python3");
+            const QString script   = qEnvironmentVariable("STAND_CLASSIFIER_SCRIPT",
+                                         QCoreApplication::applicationDirPath()
+                                         + "/../Python/classifier_service.py");
+            classifierLabel_->setStyleSheet("color: gray; font-size: 11px;");
+            classifierLabel_->setText("Starting…");
+            classifierCtrl_->start(pyExe, script);
+        } else {
+            classifierCtrl_->stop();
+        }
+    });
+
+    layout->addWidget(clsRow);
     layout->addWidget(btnRow);
     layout->addWidget(streamStatusLabel);
+    return page;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+QWidget* DeviceDetailWindow::createTxPage() {
+    auto* page   = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* title = new QLabel("Transmit", page);
+    title->setStyleSheet("font-weight: 600; font-size: 16px;");
+
+    auto* warnLabel = new QLabel(
+        "\u26A0  Connect an attenuator before transmitting. Direct antenna output "
+        "may violate local regulations.", page);
+    warnLabel->setWordWrap(true);
+    warnLabel->setStyleSheet("color: #ffaa00; font-size: 11px;");
+
+    // ── TX frequency ─────────────────────────────────────────────────────────
+    auto* freqRow  = new QWidget(page);
+    auto* freqHlay = new QHBoxLayout(freqRow);
+    freqHlay->setContentsMargins(0, 0, 0, 0);
+
+    auto* freqLabel = new QLabel("TX freq (MHz):", freqRow);
+    freqLabel->setFixedWidth(100);
+    txFreqSpin_ = new QDoubleSpinBox(freqRow);
+    txFreqSpin_->setRange(kFreqMinMHz, kFreqMaxMHz);
+    txFreqSpin_->setDecimals(3);
+    txFreqSpin_->setSingleStep(0.1);
+    txFreqSpin_->setValue(kFreqDefaultMHz);
+    txFreqSpin_->setFixedWidth(110);
+
+    freqHlay->addWidget(freqLabel);
+    freqHlay->addWidget(txFreqSpin_);
+    freqHlay->addStretch();
+
+    // ── TX gain ───────────────────────────────────────────────────────────────
+    auto* gainRow  = new QWidget(page);
+    auto* gainHlay = new QHBoxLayout(gainRow);
+    gainHlay->setContentsMargins(0, 0, 0, 0);
+
+    auto* gainLabel = new QLabel("TX gain (dB):", gainRow);
+    gainLabel->setFixedWidth(100);
+    txGainSlider_ = new QSlider(Qt::Horizontal, gainRow);
+    txGainSlider_->setRange(0, 52);
+    txGainSlider_->setValue(0);
+    txGainSlider_->setToolTip("TX output power: 0–52 dB (PAD + PGA).\n"
+                              "Start at 0 dB and increase gradually.");
+    txGainLabel_ = new QLabel("0 dB", gainRow);
+    txGainLabel_->setFixedWidth(52);
+
+    connect(txGainSlider_, &QSlider::valueChanged, txGainLabel_,
+            [this](int v) { txGainLabel_->setText(QString("%1 dB").arg(v)); });
+
+    gainHlay->addWidget(gainLabel);
+    gainHlay->addWidget(txGainSlider_, 1);
+    gainHlay->addWidget(txGainLabel_);
+
+    // ── Tone source ───────────────────────────────────────────────────────────
+    auto* toneRow  = new QWidget(page);
+    auto* toneHlay = new QHBoxLayout(toneRow);
+    toneHlay->setContentsMargins(0, 0, 0, 0);
+
+    auto* toneOffsetLabel = new QLabel("Tone offset (kHz):", toneRow);
+    toneOffsetLabel->setFixedWidth(130);
+    toneOffsetLabel->setToolTip("Offset of the CW tone from the TX LO frequency.\n"
+                                "0 = transmit exactly at LO.");
+    txToneOffsetSpin_ = new QDoubleSpinBox(toneRow);
+    txToneOffsetSpin_->setRange(-10000.0, 10000.0);
+    txToneOffsetSpin_->setDecimals(1);
+    txToneOffsetSpin_->setSingleStep(10.0);
+    txToneOffsetSpin_->setValue(0.0);
+    txToneOffsetSpin_->setFixedWidth(100);
+    txToneOffsetSpin_->setToolTip(toneOffsetLabel->toolTip());
+
+    auto* amplLabel = new QLabel("Amplitude:", toneRow);
+    amplLabel->setToolTip("I/Q sample scale factor 0.0–1.0.\n"
+                          "0.3 is a safe default to avoid clipping.");
+    txAmplitudeSpin_ = new QDoubleSpinBox(toneRow);
+    txAmplitudeSpin_->setRange(0.0, 1.0);
+    txAmplitudeSpin_->setDecimals(2);
+    txAmplitudeSpin_->setSingleStep(0.05);
+    txAmplitudeSpin_->setValue(0.3);
+    txAmplitudeSpin_->setFixedWidth(70);
+    txAmplitudeSpin_->setToolTip(amplLabel->toolTip());
+
+    toneHlay->addWidget(toneOffsetLabel);
+    toneHlay->addWidget(txToneOffsetSpin_);
+    toneHlay->addSpacing(12);
+    toneHlay->addWidget(amplLabel);
+    toneHlay->addWidget(txAmplitudeSpin_);
+    toneHlay->addStretch();
+
+    // ── TX buttons ────────────────────────────────────────────────────────────
+    auto* btnRow  = new QWidget(page);
+    auto* btnHlay = new QHBoxLayout(btnRow);
+    btnHlay->setContentsMargins(0, 0, 0, 0);
+
+    txStartButton_ = new QPushButton("▶  Start TX", btnRow);
+    txStopButton_  = new QPushButton("■  Stop TX",  btnRow);
+    txStopButton_->setEnabled(false);
+    txStartButton_->setEnabled(controller_->isInitialized());
+
+    connect(txStartButton_, &QPushButton::clicked, this, [this]() {
+        TxController::TxConfig cfg;
+        cfg.freqMHz      = txFreqSpin_->value();
+        cfg.gainDb       = txGainSlider_->value();
+        cfg.toneOffsetHz = txToneOffsetSpin_->value() * 1000.0;
+        cfg.amplitude    = static_cast<float>(txAmplitudeSpin_->value());
+
+        txCtrl_->startTx(cfg);
+
+        txStartButton_->setEnabled(false);
+        txStopButton_->setEnabled(true);
+        txStatusLabel_->setStyleSheet("color: #00cc44;");
+        txStatusLabel_->setText("Transmitting\u2026");
+    });
+
+    connect(txStopButton_, &QPushButton::clicked, this, [this]() {
+        txCtrl_->stopTx();
+        txStopButton_->setEnabled(false);
+    });
+
+    btnHlay->addWidget(txStartButton_);
+    btnHlay->addWidget(txStopButton_);
+    btnHlay->addStretch();
+
+    txStatusLabel_ = new QLabel("Idle", page);
+    txStatusLabel_->setStyleSheet("color: gray;");
+
+    layout->addWidget(title);
+    layout->addSpacing(8);
+    layout->addWidget(warnLabel);
+    layout->addSpacing(12);
+    layout->addWidget(new QLabel("Frequency", page));
+    layout->addWidget(freqRow);
+    layout->addSpacing(8);
+    layout->addWidget(new QLabel("Gain", page));
+    layout->addWidget(gainRow);
+    layout->addSpacing(8);
+    layout->addWidget(new QLabel("Source: CW tone", page));
+    layout->addWidget(toneRow);
+    layout->addSpacing(12);
+    layout->addWidget(btnRow);
+    layout->addWidget(txStatusLabel_);
+    layout->addStretch();
     return page;
 }
 
@@ -599,6 +920,75 @@ void DeviceDetailWindow::setupFftPlot() {
     });
 }
 
+// ── RX1 spectrum plot setup ───────────────────────────────────────────────────
+void DeviceDetailWindow::setupFftPlot1() {
+    fftPlot1_->addGraph();
+    fftPlot1_->graph(0)->setPen(QPen(QColor(255, 160, 0), 1.2));  // amber — distinct from RX0 blue
+
+    fftPlot1_->xAxis->setLabel("Frequency (MHz) — RX1");
+    fftPlot1_->yAxis->setLabel("Power (dB)");
+    fftPlot1_->yAxis->setRange(-120, 0);
+
+    fftPlot1_->setBackground(QBrush(QColor(30, 30, 30)));
+    fftPlot1_->xAxis->setBasePen(QPen(Qt::white));
+    fftPlot1_->yAxis->setBasePen(QPen(Qt::white));
+    fftPlot1_->xAxis->setTickPen(QPen(Qt::white));
+    fftPlot1_->yAxis->setTickPen(QPen(Qt::white));
+    fftPlot1_->xAxis->setSubTickPen(QPen(Qt::gray));
+    fftPlot1_->yAxis->setSubTickPen(QPen(Qt::gray));
+    fftPlot1_->xAxis->setTickLabelColor(Qt::white);
+    fftPlot1_->yAxis->setTickLabelColor(Qt::white);
+    fftPlot1_->xAxis->setLabelColor(Qt::white);
+    fftPlot1_->yAxis->setLabelColor(Qt::white);
+    fftPlot1_->setInteractions(QCP::iRangeZoom);
+    fftPlot1_->axisRect()->setRangeZoom(Qt::Horizontal);
+
+    centerLine1_ = new QCPItemLine(fftPlot1_);
+    centerLine1_->setPen(QPen(QColor(255, 60, 60), 1.2, Qt::DashLine));
+    centerLine1_->setAntialiased(false);
+    centerLine1_->start->setCoords(kFreqDefaultMHz, -130.0);
+    centerLine1_->end->setCoords  (kFreqDefaultMHz,   10.0);
+    centerLine1_->start->setType(QCPItemPosition::ptPlotCoords);
+    centerLine1_->end->setType  (QCPItemPosition::ptPlotCoords);
+}
+
+void DeviceDetailWindow::onFftReady1(FftFrame frame) {
+    if (!fftPlot1_ || !fftPlot1_->isVisible()) return;
+    fftPlot1_->graph(0)->setData(frame.freqMHz, frame.powerDb);
+
+    if (centerLine1_) {
+        const double mhz = freqSpinBox1_ ? freqSpinBox1_->value() : kFreqDefaultMHz;
+        centerLine1_->start->setCoords(mhz, -130.0);
+        centerLine1_->end->setCoords  (mhz,   10.0);
+    }
+
+    if (!frame.freqMHz.isEmpty()) {
+        QSignalBlocker b(fftPlot1_->xAxis);
+        fftPlot1_->xAxis->setRange(frame.freqMHz.first(), frame.freqMHz.last());
+    }
+    fftPlot1_->replot(QCustomPlot::rpQueuedReplot);
+}
+
+void DeviceDetailWindow::onDualRxToggled(bool enabled) {
+    fftPlot1_->setVisible(enabled);
+
+    if (enabled) {
+        // Set RX1 LO to spinbox value
+        if (controller_->isInitialized())
+            controller_->setFrequencyChannel({ChannelDescriptor::RX, 1},
+                                             freqSpinBox1_->value());
+        // If already streaming, start RX1 stream too
+        if (ctrl_->isStreaming() && !ctrl1_->isStreaming()) {
+            AppController::StreamConfig cfg;
+            cfg.loFreqMHz = freqSpinBox1_->value();
+            ctrl1_->startStream(cfg);
+        }
+    } else {
+        if (ctrl1_->isStreaming())
+            ctrl1_->stopStream();
+    }
+}
+
 // Filter band: ±BW around VFO frequency, visible when demod is active.
 void DeviceDetailWindow::updateFilterBand(bool visible) {
     if (!vfoBand_) return;
@@ -626,6 +1016,7 @@ void DeviceDetailWindow::onDeviceInitialized() {
     calibrateButton->setEnabled(true);
     gainSlider_->setEnabled(true);
     streamStartButton->setEnabled(true);
+    if (txStartButton_) txStartButton_->setEnabled(true);
 
     refreshCurrentSampleRate();
     QMessageBox::information(this, "Initialization", "Device initialized successfully.");
@@ -771,6 +1162,13 @@ void DeviceDetailWindow::startStream() {
 
     ctrl_->startStream(cfg);
 
+    // Start RX1 stream if dual RX is enabled
+    if (dualRxCheck_ && dualRxCheck_->isChecked()) {
+        AppController::StreamConfig cfg1;
+        cfg1.loFreqMHz = freqSpinBox1_ ? freqSpinBox1_->value() : cfg.loFreqMHz;
+        ctrl1_->startStream(cfg1);
+    }
+
     // Connect stream status to label (forwarded through AppController)
     connect(ctrl_, &AppController::streamStatus,
             streamStatusLabel, &QLabel::setText, Qt::QueuedConnection);
@@ -808,6 +1206,8 @@ void DeviceDetailWindow::startStream() {
 
 void DeviceDetailWindow::stopStream() {
     ctrl_->stopStream();
+    if (ctrl1_->isStreaming())
+        ctrl1_->stopStream();
     streamStopButton->setEnabled(false);
 }
 
@@ -1002,6 +1402,8 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
     if (!connected) {
         connectionTimer->stop();
         ctrl_->stopStream();
+        if (ctrl1_->isStreaming())      ctrl1_->stopStream();
+        if (txCtrl_->isTransmitting())  txCtrl_->stopTx();
         // Defer the signal so we fully unwind the QFutureWatcher callback
         // before the deviceDisconnected handler opens a QMessageBox (which
         // would re-enter the event loop while still on the watcher's stack).
@@ -1010,13 +1412,26 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RXTX coordination helper
+// ═══════════════════════════════════════════════════════════════════════════════
+void DeviceDetailWindow::stopAllStreams() {
+    if (ctrl_->isStreaming())       ctrl_->stopStream();
+    if (ctrl1_->isStreaming())      ctrl1_->stopStream();
+    if (txCtrl_->isTransmitting())  txCtrl_->stopTx();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // DeviceSelectionWindow
 // ═══════════════════════════════════════════════════════════════════════════════
-DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager, QWidget* parent)
+DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager,
+                                             SessionManager& sessions,
+                                             QWidget* parent)
     : QWidget(parent)
     , manager(manager)
+    , sessions_(sessions)
 {
     setWindowTitle("Stand — SDR");
+    setMinimumWidth(320);
     auto* layout = new QVBoxLayout(this);
     statusLabel  = new QLabel("Searching for SDR devices...", this);
     deviceList   = new QListWidget(this);
@@ -1030,21 +1445,13 @@ DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager, QWidget* p
     connect(&refreshWatcher,
             &QFutureWatcher<QList<std::shared_ptr<IDevice>>>::finished,
             this, [this]() {
-        deviceList->clear();
-        const auto devices = refreshWatcher.result();
-        if (devices.empty()) {
-            statusLabel->setText("No devices found. Waiting for connection…");
-            return;
-        }
-        statusLabel->setText("Select a device to open its window.");
-        for (const auto& dev : devices) {
-            auto* item = new QListWidgetItem(deviceList);
-            item->setSizeHint(QSize(0, 40));
-            auto* btn = new QPushButton(dev->name(), deviceList);
-            connect(btn, &QPushButton::clicked, this, [this, dev]() { openDevice(dev); });
-            deviceList->setItemWidget(item, btn);
-        }
+        lastDevices_ = refreshWatcher.result();
+        updateDeviceButtons();
     });
+
+    // When a window is opened/closed, refresh the button states immediately.
+    connect(&sessions_, &SessionManager::sessionChanged,
+            this, &DeviceSelectionWindow::updateDeviceButtons);
 
     refreshDevices();
     refreshTimer->start();
@@ -1058,19 +1465,44 @@ void DeviceSelectionWindow::refreshDevices() {
     }));
 }
 
+void DeviceSelectionWindow::updateDeviceButtons() {
+    deviceList->clear();
+    if (lastDevices_.empty()) {
+        statusLabel->setText("No devices found. Waiting for connection…");
+        return;
+    }
+    statusLabel->setText("Select a device to open its window.");
+    for (const auto& dev : lastDevices_) {
+        const bool inUse = sessions_.isInUse(dev->id());
+        auto* item = new QListWidgetItem(deviceList);
+        item->setSizeHint(QSize(0, 40));
+        const QString label = inUse ? dev->name() + "  [In use]" : dev->name();
+        auto* btn = new QPushButton(label, deviceList);
+        btn->setEnabled(!inUse);
+        connect(btn, &QPushButton::clicked, this, [this, dev]() { openDevice(dev); });
+        deviceList->setItemWidget(item, btn);
+    }
+}
+
 void DeviceSelectionWindow::openDevice(const std::shared_ptr<IDevice>& dev) {
-    refreshTimer->stop();
+    if (sessions_.isInUse(dev->id())) return;
+    sessions_.markInUse(dev->id());
+
     auto* window = new DeviceDetailWindow(dev, manager);
     window->setAttribute(Qt::WA_DeleteOnClose);
-    connect(window, &DeviceDetailWindow::deviceDisconnected, this, [this, window]() {
+
+    connect(window, &DeviceDetailWindow::deviceDisconnected, window, [window]() {
         QMessageBox::warning(window, "Device disconnected",
-            "Connection to the device was lost. Returning to device search.");
+            "Connection to the device was lost. The window will close.");
         window->close();
-        show();
-        refreshTimer->start();
     });
+    // Release the session slot whenever the window is destroyed
+    // (covers both normal X-close and disconnect-triggered close).
+    connect(window, &QObject::destroyed, this, [this, devId = dev->id()]() {
+        sessions_.release(devId);
+    });
+
     window->show();
-    hide();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1078,7 +1510,7 @@ void DeviceSelectionWindow::openDevice(const std::shared_ptr<IDevice>& dev) {
 // ═══════════════════════════════════════════════════════════════════════════════
 Application::Application(int& argc, char** argv, IDeviceManager& manager)
     : qtApp(argc, argv)
-    , selectionWindow(manager)
+    , selectionWindow(manager, sessionManager_)
 {
     QApplication::setWindowIcon(QIcon(":/assets/icon.jpg"));
 }

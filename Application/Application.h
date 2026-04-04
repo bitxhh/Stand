@@ -27,10 +27,13 @@
 #include "../Core/IDeviceManager.h"
 #include "../Hardware/DeviceController.h"
 #include "AppController.h"
+#include "ClassifierController.h"
+#include "SessionManager.h"
 
 class QCustomPlot;
 class QCPItemLine;
 class QCPItemRect;
+class TxController;
 
 class DeviceDetailWindow : public QMainWindow {
     Q_OBJECT
@@ -128,8 +131,32 @@ private:
     // ── Spectrum filter band ──────────────────────────────────────────────────
     QCPItemRect*    vfoBand_{nullptr};
 
-    // ── App controller (owns Pipeline, handlers, audio, worker thread) ───────
+    // ── App controller RX0 (owns Pipeline, handlers, audio, worker thread) ──
     AppController*  ctrl_{nullptr};
+
+    // ── Dual RX (RX1) ────────────────────────────────────────────────────────
+    QCheckBox*      dualRxCheck_{nullptr};
+    QCustomPlot*    fftPlot1_{nullptr};
+    QCPItemLine*    centerLine1_{nullptr};
+    QDoubleSpinBox* freqSpinBox1_{nullptr};
+    AppController*  ctrl1_{nullptr};
+
+    // ── Classifier ───────────────────────────────────────────────────────────
+    ClassifierController* classifierCtrl_{nullptr};
+    QCheckBox*            classifierCheck_{nullptr};
+    QLabel*               classifierLabel_{nullptr};
+
+    // ── TX page ───────────────────────────────────────────────────────────────
+    QWidget*        txPage_{nullptr};
+    QDoubleSpinBox* txFreqSpin_{nullptr};
+    QSlider*        txGainSlider_{nullptr};
+    QLabel*         txGainLabel_{nullptr};
+    QDoubleSpinBox* txToneOffsetSpin_{nullptr};
+    QDoubleSpinBox* txAmplitudeSpin_{nullptr};
+    QPushButton*    txStartButton_{nullptr};
+    QPushButton*    txStopButton_{nullptr};
+    QLabel*         txStatusLabel_{nullptr};
+    TxController*   txCtrl_{nullptr};
 
     // ── Plot zoom state ───────────────────────────────────────────────────────
     // True when the user has scrolled in — onFftReady skips rescale to keep zoom.
@@ -145,10 +172,15 @@ private:
     QWidget* createDeviceInfoPage();
     QWidget* createDeviceControlPage();
     QWidget* createDeviceFFTpage();
+    QWidget* createTxPage();
+    void     stopAllStreams();   // stops RX0 + RX1 + TX before calibrate/setSampleRate
     void     refreshCurrentSampleRate() const;
     void     setupFftPlot();
+    void     setupFftPlot1();
     void     updateFilterBand(bool visible);
     void     openRecordSettings();
+    void     onFftReady1(FftFrame frame);
+    void     onDualRxToggled(bool enabled);
 
     static constexpr double kFreqMinMHz     =   30.0;
     static constexpr double kFreqMaxMHz     = 3800.0;
@@ -159,10 +191,13 @@ private:
 class DeviceSelectionWindow : public QWidget {
     Q_OBJECT
 public:
-    explicit DeviceSelectionWindow(IDeviceManager& manager, QWidget* parent = nullptr);
+    explicit DeviceSelectionWindow(IDeviceManager& manager,
+                                   SessionManager& sessions,
+                                   QWidget* parent = nullptr);
 
 private slots:
     void refreshDevices();
+    void updateDeviceButtons();
     void openDevice(const std::shared_ptr<IDevice>& device);
 
 private:
@@ -171,6 +206,8 @@ private:
     QTimer*      refreshTimer{nullptr};
     QFutureWatcher<QList<std::shared_ptr<IDevice>>> refreshWatcher;
     IDeviceManager& manager;
+    SessionManager& sessions_;
+    QList<std::shared_ptr<IDevice>> lastDevices_;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -181,5 +218,6 @@ public:
 
 private:
     QApplication          qtApp;
+    SessionManager        sessionManager_;
     DeviceSelectionWindow selectionWindow;
 };

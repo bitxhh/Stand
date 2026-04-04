@@ -33,8 +33,11 @@ public slots:
 
     void setGain(double dB);   // 0–68.5 dB → IDevice::setGain()
 
-    // freqMHz — значение из спинбокса (30..3800 МГц)
+    // freqMHz — значение из спинбокса (30..3800 МГц), применяется к RX channel 0
     void setFrequency(double freqMHz);
+
+    // Channel-aware — для RX1 и будущих каналов
+    void setFrequencyChannel(ChannelDescriptor ch, double freqMHz);
 
 signals:
     void deviceInitialized();

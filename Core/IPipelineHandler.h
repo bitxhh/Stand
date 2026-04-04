@@ -1,6 +1,18 @@
 #pragma once
 
+#include "ChannelDescriptor.h"
 #include <cstdint>
+
+// ---------------------------------------------------------------------------
+// BlockMeta — metadata attached to every I/Q block dispatched through Pipeline.
+//
+// channel   — which device channel produced this block
+// timestamp — hardware sample counter (from lms_stream_meta_t); 0 if unavailable
+// ---------------------------------------------------------------------------
+struct BlockMeta {
+    ChannelDescriptor channel{};    // default: {RX, 0}
+    uint64_t          timestamp{0};
+};
 
 // ---------------------------------------------------------------------------
 // IPipelineHandler — интерфейс обработчика I/Q блоков в Pipeline.
@@ -25,6 +37,14 @@ public:
     // count — количество I/Q пар (размер буфера = count * 2 * sizeof(int16_t))
     // sampleRateHz — текущая частота дискретизации устройства
     virtual void processBlock(const int16_t* iq, int count, double sampleRateHz) = 0;
+
+    // Extended overload with channel/timestamp metadata.
+    // Default implementation calls the basic overload (ignoring meta) —
+    // all existing handlers work without modification.
+    virtual void processBlock(const int16_t* iq, int count, double sampleRateHz,
+                              const BlockMeta& /*meta*/) {
+        processBlock(iq, count, sampleRateHz);
+    }
 
     // Вызывается один раз перед первым processBlock() после старта стрима.
     virtual void onStreamStarted(double /*sampleRateHz*/) {}

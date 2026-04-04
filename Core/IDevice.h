@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ChannelDescriptor.h"
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -66,6 +67,28 @@ public:
     // buffer: interleaved int16 [I0, Q0, I1, Q1, ...], размер buffer >= count*2
     // Возвращает число принятых I/Q пар, 0 = таймаут, < 0 = ошибка.
     virtual int readBlock(int16_t* buffer, int count, int timeoutMs) = 0;
+
+    // ── Channel-aware стрим (Phase 1+) ───────────────────────────────────────
+    // Дефолтные реализации делегируют в однокнальные методы выше ({RX,0}).
+    // LimeDevice переопределит их в Phase 1 для поддержки нескольких каналов.
+    virtual void startStream(ChannelDescriptor /*ch*/) { startStream(); }
+    virtual void stopStream(ChannelDescriptor /*ch*/)  { stopStream(); }
+    virtual int  readBlock(ChannelDescriptor /*ch*/, int16_t* buffer, int count, int timeoutMs) {
+        return readBlock(buffer, count, timeoutMs);
+    }
+    virtual void setFrequency(ChannelDescriptor /*ch*/, double hz) { setFrequency(hz); }
+    virtual void setGain(ChannelDescriptor /*ch*/, double dB)      { setGain(dB); }
+
+    // ── Hardware timestamps (Phase 6: sync) ────────────────────────────────
+    // Последний аппаратный timestamp из readBlock() для данного канала.
+    // Монотонный счётчик семплов. 0 = стрим не запущен или реализация не поддерживает.
+    [[nodiscard]] virtual uint64_t lastReadTimestamp(ChannelDescriptor /*ch*/) const { return 0; }
+
+    // TX write block — отправляет один блок I/Q в TX поток.
+    // Вызывается из TxWorker thread. Возвращает число отправленных пар, <0 = ошибка.
+    // Дефолт: -1 (TX не поддерживается).
+    virtual int writeBlock(ChannelDescriptor /*ch*/, const int16_t* /*buffer*/,
+                           int /*count*/, int /*timeoutMs*/) { return -1; }
 
     // ── Состояние ─────────────────────────────────────────────────────────────
     [[nodiscard]] virtual DeviceState state() const = 0;

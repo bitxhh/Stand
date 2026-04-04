@@ -60,3 +60,13 @@ void DeviceController::setFrequency(double freqMHz) {
         emit errorOccurred(QString::fromStdString(ex.what()));
     }
 }
+
+void DeviceController::setFrequencyChannel(ChannelDescriptor ch, double freqMHz) {
+    try {
+        device_->setFrequency(ch, freqMHz * 1e6);
+        emit statusChanged(QString("RX%1: %2 MHz")
+                           .arg(ch.channelIndex).arg(freqMHz, 0, 'f', 3));
+    } catch (const std::exception& ex) {
+        emit errorOccurred(QString::fromStdString(ex.what()));
+    }
+}

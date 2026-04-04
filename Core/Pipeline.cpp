@@ -29,6 +29,13 @@ void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz) 
         h->processBlock(iq, count, sampleRateHz);
 }
 
+void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz,
+                              const BlockMeta& meta) {
+    std::shared_lock lock(mutex_);
+    for (auto* h : handlers_)
+        h->processBlock(iq, count, sampleRateHz, meta);
+}
+
 void Pipeline::notifyStarted(double sampleRateHz) {
     std::shared_lock lock(mutex_);
     for (auto* h : handlers_)

@@ -1,12 +1,15 @@
 #include "StreamWorker.h"
 #include "IDevice.h"
 #include "Pipeline.h"
+#include "IPipelineHandler.h"
 #include "Logger.h"
 
-StreamWorker::StreamWorker(IDevice* device, Pipeline* pipeline, QObject* parent)
+StreamWorker::StreamWorker(IDevice* device, Pipeline* pipeline,
+                           ChannelDescriptor channel, QObject* parent)
     : QObject(parent)
     , device_(device)
     , pipeline_(pipeline)
+    , channel_(channel)
 {
     buffer_.resize(kBlockSize * 2);   // interleaved I/Q: count * 2 int16
 }
@@ -22,7 +25,7 @@ void StreamWorker::run() {
 
     // Старт стрима
     try {
-        device_->startStream();
+        device_->startStream(channel_);
     } catch (const std::exception& ex) {
         const QString err = QString("startStream failed: %1").arg(ex.what());
         LOG_ERROR(err.toStdString());
@@ -41,7 +44,7 @@ void StreamWorker::run() {
     while (running_.load()) {
         // 100 ms timeout — keeps LMS_RecvStream from holding the device mutex
         // too long and blocking main-thread calls (e.g. LMS_SetLOFrequency).
-        const int n = device_->readBlock(buffer_.data(), kBlockSize, 100);
+        const int n = device_->readBlock(channel_, buffer_.data(), kBlockSize, 100);
 
         if (diagCount < 10) {
             LOG_DEBUG("readBlock[" + std::to_string(diagCount) + "] = " + std::to_string(n));
@@ -62,11 +65,12 @@ void StreamWorker::run() {
                      + " got " + std::to_string(n) + " — continuing");
         }
 
-        pipeline_->dispatchBlock(buffer_.data(), n, sr);
+        pipeline_->dispatchBlock(buffer_.data(), n, sr,
+                                BlockMeta{channel_, device_->lastReadTimestamp(channel_)});
     }
 
     pipeline_->notifyStopped();
-    device_->stopStream();
+    device_->stopStream(channel_);
 
     LOG_INFO("StreamWorker finished: " + devId.toStdString());
     emit statusMessage(QString("Stream stopped: %1").arg(devId));

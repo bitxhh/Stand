@@ -5,18 +5,18 @@
 
 #include <atomic>
 #include <limits>
+#include <map>
 #include <string>
 
 // ---------------------------------------------------------------------------
 // LimeDevice — реализация IDevice для LimeSDR (LimeSuite API).
 //
-// Инкапсулирует lms_device_t и lms_stream_t.
-// StreamWorker взаимодействует только через IDevice API:
-//   startStream() → readBlock() в цикле → stopStream().
+// Поддерживает несколько потоков (RX0, RX1, TX0 ...) на одном устройстве.
+// Каждый поток идентифицируется ChannelDescriptor и хранится в streams_.
 //
 // Поток вызовов:
-//   UI thread : init(), calibrate(), setSampleRate(), setFrequency(), setGain()
-//   Worker thread : startStream(), readBlock(), stopStream()
+//   UI thread:     init(), calibrate(), setSampleRate(), setFrequency(), setGain()
+//   Worker thread: startStream(ch), readBlock(ch), stopStream(ch)
 // ---------------------------------------------------------------------------
 class LimeDevice : public IDevice {
     Q_OBJECT
@@ -34,68 +34,82 @@ public:
 
     // ── IDevice: жизненный цикл ───────────────────────────────────────────────
     void init()      override;
-    void calibrate() override;   // читает currentSampleRate_ внутри
+    void calibrate() override;
 
-    // ── IDevice: параметры ────────────────────────────────────────────────────
+    // ── IDevice: параметры (глобальные) ──────────────────────────────────────
     void   setSampleRate(double hz)                      override;
     [[nodiscard]] double sampleRate()              const override;
     [[nodiscard]] QList<double> supportedSampleRates()   const override;
 
+    // ── IDevice: параметры (channel 0, backward compat) ──────────────────────
     void   setFrequency(double hz)                       override;
-    [[nodiscard]] double frequency()               const override;
+    [[nodiscard]] double frequency()               const override { return currentFrequency_[0]; }
 
-    // Единое усиление [0, maxGain()]. Внутри — LMS_SetGaindB.
     void   setGain(double dB)                            override;
-    [[nodiscard]] double gain()                    const override;
+    [[nodiscard]] double gain()                    const override { return currentGainDb_[0]; }
     [[nodiscard]] double maxGain()                 const override { return kMaxGainDb; }
 
-    // ── IDevice: стрим ────────────────────────────────────────────────────────
+    // ── IDevice: однокальные стрим (channel 0, backward compat) ──────────────
     void startStream() override;
     void stopStream()  override;
+    int  readBlock(int16_t* buffer, int count, int timeoutMs) override;
 
-    // Блокирует до прихода данных или таймаута.
-    // Возвращает число I/Q пар, 0 = таймаут, < 0 = ошибка.
-    int readBlock(int16_t* buffer, int count, int timeoutMs) override;
+    // ── IDevice: channel-aware стрим ─────────────────────────────────────────
+    void startStream(ChannelDescriptor ch) override;
+    void stopStream(ChannelDescriptor ch)  override;
+    int  readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) override;
+
+    // ── IDevice: channel-aware параметры ─────────────────────────────────────
+    void setFrequency(ChannelDescriptor ch, double hz) override;
+    void setGain(ChannelDescriptor ch, double dB)      override;
+
+    // ── IDevice: hardware timestamps ────────────────────────────────────────
+    [[nodiscard]] uint64_t lastReadTimestamp(ChannelDescriptor ch) const override;
+
+    // ── IDevice: TX write ─────────────────────────────────────────────────────
+    int writeBlock(ChannelDescriptor ch, const int16_t* buffer,
+                   int count, int timeoutMs) override;
 
     // ── IDevice: состояние ────────────────────────────────────────────────────
     [[nodiscard]] DeviceState state() const override { return state_; }
 
     // ── IDevice: аппаратно-специфичный виджет ────────────────────────────────
-    // Зарезервировано для Пути B (LNA/TIA/PGA через WriteParam). Сейчас nullptr.
     QWidget* createAdvancedWidget(QWidget* parent) override;
 
     static const QList<double> kSupportedRates;
 
-    // Доступ к LimeSuite info string — используется в LimeDeviceManager для сравнения устройств.
     [[nodiscard]] const lms_info_str_t& limeInfo() const { return deviceId_; }
 
 private:
     void setState(DeviceState s);
-    void setupStream();
-    void teardownStream();
+    void setupStream(ChannelDescriptor ch);
+    void teardownStream(ChannelDescriptor ch);
+    void teardownAllStreams();
+    void calibrateChannel(int idx);
 
-    lms_device_t*     handle_{nullptr};
-    lms_info_str_t    deviceId_{};
-    std::string       serial_;
+    lms_device_t*  handle_{nullptr};
+    lms_info_str_t deviceId_{};
+    std::string    serial_;
 
-    double            currentSampleRate_{2'000'000.0};
-    double            currentFrequency_ {102e6};
-    double            currentGainDb_    {0.0};
+    // ── Per-channel state ─────────────────────────────────────────────────────
+    // RX index 0/1 = RX channel 0/1.  TX index 0/1 = TX channel 0/1.
+    double currentSampleRate_{2'000'000.0};  // global (same for all channels)
+    double currentFrequency_[2]    = {102e6, 102e6};  // RX
+    double currentGainDb_[2]       = {0.0,   0.0  };  // RX
+    double currentTxFrequency_[2]  = {102e6, 102e6};  // TX
+    double currentTxGainDb_[2]     = {0.0,   0.0  };  // TX
 
-    // Pending LO frequency — set from UI thread, applied in readBlock() on worker thread.
-    // Avoids calling LMS_SetLOFrequency from main thread while LMS_RecvStream runs.
-    // Sentinel kNoFreqPending means no pending change.
+    // Pending LO change posted from UI thread, applied in readBlock() on worker thread.
     static constexpr double kNoFreqPending = -1.0;
-    std::atomic<double> pendingFrequency_{kNoFreqPending};
+    std::atomic<double> pendingFrequency_[2];   // initialized in ctor
 
-    DeviceState       state_{DeviceState::Connected};
-    lms_stream_t      streamId_{};
-    bool              streamReady_{false};
+    // ── Per-channel streams ───────────────────────────────────────────────────
+    std::map<ChannelDescriptor, lms_stream_t> streams_;
+    std::map<ChannelDescriptor, uint64_t>     lastTimestamp_;  // from lms_stream_meta_t
 
-    static constexpr double kMaxGainDb = 68.5;
+    DeviceState state_{DeviceState::Connected};
 
-    // Default TIA register value.  ExtIO_LimeSDR uses G_TIA_RFE=3 (max gain).
-    // Must be restored after any call that may reset it (LMS_SetLPFBW,
-    // LMS_Calibrate, LMS_SetGaindB).
-    static constexpr int kDefaultTia = 3;
+    static constexpr double kMaxGainDb   = 68.5;
+    static constexpr double kMaxTxGainDb = 52.0;  // TX PAD + PGA range
+    static constexpr int    kDefaultTia  = 3;
 };

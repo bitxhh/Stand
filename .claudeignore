@@ -1,0 +1,30 @@
+# Build outputs
+cmake-build-*/
+
+# Third-party source
+external/
+
+# Binaries and libs
+*.dll
+*.exe
+*.a
+*.o
+*.obj
+
+# Runtime files
+stand.log
+*.raw
+*.log
+
+# Assets
+assets/
+
+# IDE
+.idea/
+*.iml
+
+# Human-facing docs (content mirrored in docs/)
+README.md
+
+# Old notes
+TODO

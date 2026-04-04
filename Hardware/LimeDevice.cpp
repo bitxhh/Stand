@@ -18,8 +18,7 @@
 #include <thread>
 
 // ---------------------------------------------------------------------------
-// Supported sample rates — стабильны на LimeSDR USB и Mini по USB.
-// Все дают целое D1 = round(SR / 250 000) для FM IF 250 кГц.
+// Supported sample rates
 // ---------------------------------------------------------------------------
 const QList<double> LimeDevice::kSupportedRates = {
     2'500'000,
@@ -57,6 +56,37 @@ static std::string parseSerial(const lms_info_str_t& infoStr) {
     return {};
 }
 
+static int antennaForFrequency(double hz) {
+    if (hz < 1.5e9) return LMS_PATH_LNAW;
+    return LMS_PATH_LNAH;
+}
+
+static const char* antennaName(int path) {
+    switch (path) {
+        case LMS_PATH_LNAH: return "LNAH (>1.5 GHz)";
+        case LMS_PATH_LNAL: return "LNAL (300 MHz–1.5 GHz)";
+        case LMS_PATH_LNAW: return "LNAW (<1.5 GHz wideband)";
+        default:            return "NONE";
+    }
+}
+
+// Set analog LPF BW for one RX channel, protecting TIA from internal reset.
+// LMS_SetLPFBW corrupts G_TIA_RFE — restore it after.
+static void setLpfBwProtected(lms_device_t* h, int ch, double bw, int tiaValue) {
+    LMS_WriteParam(h, LMS7_G_TIA_RFE, 3);
+    if (LMS_SetLPFBW(h, LMS_CH_RX, ch, bw) != 0)
+        LOG_WARN("LMS_SetLPFBW(ch=" + std::to_string(ch)
+                 + ", bw=" + std::to_string(bw) + ") failed");
+    LMS_WriteParam(h, LMS7_G_TIA_RFE, tiaValue);
+}
+
+// PGA compensation register (LMS7002M datasheet).
+static int rccCtlForPga(int pga) {
+    return static_cast<int>(
+        (430.0 * std::pow(0.65, static_cast<double>(pga) / 10.0) - 110.35)
+        / 20.4516 + 16.0);
+}
+
 // ---------------------------------------------------------------------------
 // Constructor / destructor
 // ---------------------------------------------------------------------------
@@ -65,13 +95,15 @@ LimeDevice::LimeDevice(const lms_info_str_t& id, QObject* parent)
 {
     std::memcpy(deviceId_, id, sizeof(lms_info_str_t));
     serial_ = parseSerial(id);
+    pendingFrequency_[0].store(kNoFreqPending);
+    pendingFrequency_[1].store(kNoFreqPending);
     LOG_DEBUG("LimeDevice created: " + serial_);
 }
 
 LimeDevice::~LimeDevice() {
     if (handle_) {
         LOG_INFO("LimeDevice closing: " + serial_);
-        if (streamReady_) teardownStream();
+        teardownAllStreams();
         LMS_Close(handle_);
         handle_ = nullptr;
     }
@@ -88,56 +120,10 @@ QString LimeDevice::name() const {
     return QString("LimeSDR [%1]").arg(QString::fromStdString(serial_));
 }
 
-// ---------------------------------------------------------------------------
-// IDevice: состояние
-// ---------------------------------------------------------------------------
 void LimeDevice::setState(DeviceState s) {
     if (state_ == s) return;
     state_ = s;
     emit stateChanged(s);
-}
-
-// ---------------------------------------------------------------------------
-// Internal: select RX antenna path for a given LO frequency.
-// LMS_Init does not set an antenna — leaving it at PATH_NONE means the RX
-// input is disconnected and only internal noise is received.
-// ---------------------------------------------------------------------------
-static int antennaForFrequency(double hz) {
-    if (hz < 1.5e9) return LMS_PATH_LNAW;  // 0 – 1.5 GHz: wideband (FM, DAB, ADS-B …)
-    return LMS_PATH_LNAH;                   // > 1.5 GHz: high-band
-}
-
-static const char* antennaName(int path) {
-    switch (path) {
-        case LMS_PATH_LNAH: return "LNAH (>1.5 GHz)";
-        case LMS_PATH_LNAL: return "LNAL (300 MHz–1.5 GHz)";
-        case LMS_PATH_LNAW: return "LNAW (<1.5 GHz wideband)";
-        default:            return "NONE";
-    }
-}
-
-// ---------------------------------------------------------------------------
-// LMS_SetLPFBW internally modifies G_TIA_RFE.  ExtIO_LimeSDR works around
-// this by forcing TIA=3 (max) before the call and restoring afterwards.
-// ---------------------------------------------------------------------------
-static void setLpfBwProtected(lms_device_t* h, double bw, int tiaValue) {
-    // Temporarily set TIA to max so LMS_SetLPFBW's internal calibration works
-    LMS_WriteParam(h, LMS7_G_TIA_RFE, 3);
-    if (LMS_SetLPFBW(h, LMS_CH_RX, 0, bw) != 0)
-        LOG_WARN("LMS_SetLPFBW(" + std::to_string(bw) + ") failed");
-    // Restore user TIA
-    LMS_WriteParam(h, LMS7_G_TIA_RFE, tiaValue);
-}
-
-// ---------------------------------------------------------------------------
-// PGA compensation register from LMS7002M datasheet.
-// ExtIO_LimeSDR always writes RCC_CTL_PGA_RBB alongside G_PGA_RBB to keep
-// the PGA baseband filter response correct at every gain setting.
-// ---------------------------------------------------------------------------
-static int rccCtlForPga(int pga) {
-    return static_cast<int>(
-        (430.0 * std::pow(0.65, static_cast<double>(pga) / 10.0) - 110.35)
-        / 20.4516 + 16.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +133,6 @@ void LimeDevice::init() {
     LOG_INFO("LimeDevice init: " + serial_);
     setState(DeviceState::Connected);
 
-    // Retry loop: после пересборки Windows держит USB-дескриптор.
-    // До 6 попыток с нарастающей паузой (~9 с суммарно).
     static constexpr int kMaxRetries = 6;
     for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
         if (handle_) { LMS_Close(handle_); handle_ = nullptr; }
@@ -187,37 +171,34 @@ void LimeDevice::init() {
         LOG_INFO("LPF BW range: " + std::to_string(lpfRange.min / 1e6) + " – "
                  + std::to_string(lpfRange.max / 1e6) + " MHz");
 
-    // ── Init order matches ExtIO_LimeSDR (known-good): ─────────────────────
-    //   SR → channels → antenna → LPF (TIA-protected) → gain → freq → [calibrate later]
-
     if (LMS_SetSampleRate(handle_, currentSampleRate_, 2) != 0)
         throwLime("LMS_SetSampleRate failed");
 
-    // TX must be enabled before RX — LMS_Calibrate uses internal TX→RX loopback.
+    // Enable both RX channels. TX ch0 must be enabled for calibration loopback.
     if (LMS_EnableChannel(handle_, LMS_CH_RX, 0, true) != 0)
-        throwLime("LMS_EnableChannel RX failed");
+        throwLime("LMS_EnableChannel RX0 failed");
+    if (LMS_EnableChannel(handle_, LMS_CH_RX, 1, true) != 0)
+        throwLime("LMS_EnableChannel RX1 failed");
     if (LMS_EnableChannel(handle_, LMS_CH_TX, 0, true) != 0)
-        throwLime("LMS_EnableChannel TX failed");
+        throwLime("LMS_EnableChannel TX0 failed");
 
-    const int antenna = antennaForFrequency(currentFrequency_);
-    if (LMS_SetAntenna(handle_, LMS_CH_RX, 0, antenna) != 0)
-        throwLime("LMS_SetAntenna failed");
-    LOG_INFO("Antenna path: " + std::string(antennaName(antenna))
-             + " for " + std::to_string(currentFrequency_ / 1e6) + " MHz");
+    // Antenna and LO for both RX channels
+    for (int ch = 0; ch < 2; ++ch) {
+        const int ant = antennaForFrequency(currentFrequency_[ch]);
+        if (LMS_SetAntenna(handle_, LMS_CH_RX, ch, ant) != 0)
+            throwLime("LMS_SetAntenna RX" + std::to_string(ch) + " failed");
+        LOG_INFO("Antenna RX" + std::to_string(ch) + ": "
+                 + antennaName(ant) + " for "
+                 + std::to_string(currentFrequency_[ch] / 1e6) + " MHz");
 
-    // Analog LPF BW = sample rate (ExtIO default).
-    // LMS_SetLPFBW internally modifies G_TIA_RFE — must protect it.
-    setLpfBwProtected(handle_, currentSampleRate_, kDefaultTia);
-    LOG_INFO("Analog LPF BW set to " + std::to_string(currentSampleRate_) + " Hz");
+        setLpfBwProtected(handle_, ch, currentSampleRate_, kDefaultTia);
 
-    if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, currentFrequency_) != 0)
-        throwLime("LMS_SetLOFrequency failed");
+        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, ch, currentFrequency_[ch]) != 0)
+            throwLime("LMS_SetLOFrequency RX" + std::to_string(ch) + " failed");
+    }
 
-    // Warm up WinUSB I/O context from the main thread.
-    // LMS_SetupStream must be called at least once on the main thread before
-    // LMS_StartStream is called from the worker thread — otherwise WinUSB
-    // ReadFile requests fail silently (ret=0) on Windows.
-    setupStream();
+    // Warm up WinUSB I/O context for channel 0 (required before worker-thread start).
+    setupStream({ChannelDescriptor::RX, 0});
 
     setState(DeviceState::Ready);
     LOG_INFO("LimeDevice ready: " + serial_);
@@ -226,41 +207,51 @@ void LimeDevice::init() {
 // ---------------------------------------------------------------------------
 // IDevice: calibrate
 // ---------------------------------------------------------------------------
+void LimeDevice::calibrateChannel(int idx) {
+    const double calBw = std::max(currentSampleRate_, 2.5e6);
+    const double savedGain = currentGainDb_[idx];
+
+    if (savedGain > 0.0) {
+        LOG_INFO("Calibrate ch" + std::to_string(idx)
+                 + ": lowering gain to 0 dB (was " + std::to_string(savedGain) + " dB)");
+        LMS_SetGaindB(handle_, LMS_CH_RX, idx, 0);
+    }
+
+    LOG_INFO("Calibrating ch" + std::to_string(idx)
+             + " on " + serial_ + " at " + std::to_string(calBw) + " Hz");
+
+    const bool ok = (LMS_Calibrate(handle_, LMS_CH_RX, idx, calBw, 0) == 0);
+
+    if (savedGain > 0.0) {
+        LOG_INFO("Calibrate ch" + std::to_string(idx)
+                 + ": restoring gain to " + std::to_string(savedGain) + " dB");
+        LMS_SetGaindB(handle_, LMS_CH_RX, idx, static_cast<unsigned>(savedGain));
+    }
+
+    if (!ok)
+        throwLime("LMS_Calibrate ch" + std::to_string(idx) + " failed");
+
+    setLpfBwProtected(handle_, idx, currentSampleRate_, kDefaultTia);
+    LOG_INFO("Calibration ch" + std::to_string(idx) + " done: " + serial_);
+}
+
 void LimeDevice::calibrate() {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot calibrate — device not initialized");
 
-    // CalBW = max(SR, 2.5M) — matches ExtIO_LimeSDR behaviour.
-    // ExtIO sets CalibrationBandwidth = max(LPFbandwidth, 2.5e6),
-    // and LPF bandwidth = sample rate.
+    calibrateChannel(0);
+    calibrateChannel(1);
+
+    // TX calibration (non-fatal — some hardware units don't support it cleanly).
     const double calBw = std::max(currentSampleRate_, 2.5e6);
-
-    // LimeSuite LMS_Calibrate can leave the LNA in internal loopback mode
-    // when called at high gain with an antenna connected (MCU error 5).
-    // The hardware recovers reliably if gain is set to 0 dB before calibration.
-    const double savedGain = currentGainDb_;
-    if (savedGain > 0.0) {
-        LOG_INFO("Calibrate: lowering gain to 0 dB (was " + std::to_string(savedGain) + " dB)");
-        LMS_SetGaindB(handle_, LMS_CH_RX, 0, 0);
+    LOG_INFO("Calibrating TX0 on " + serial_ + " at " + std::to_string(calBw) + " Hz");
+    if (LMS_Calibrate(handle_, LMS_CH_TX, 0, calBw, 0) == 0) {
+        if (LMS_SetLPFBW(handle_, LMS_CH_TX, 0, currentSampleRate_) != 0)
+            LOG_WARN("LMS_SetLPFBW TX0 post-calibrate failed");
+        LOG_INFO("TX0 calibration done: " + serial_);
+    } else {
+        LOG_WARN("LMS_Calibrate TX0 failed — continuing without TX calibration");
     }
-
-    LOG_INFO("Calibrating " + serial_ + " at " + std::to_string(calBw) + " Hz");
-
-    const bool ok = (LMS_Calibrate(handle_, LMS_CH_RX, 0, calBw, 0) == 0);
-
-    // Always restore gain, even if calibration failed
-    if (savedGain > 0.0) {
-        LOG_INFO("Calibrate: restoring gain to " + std::to_string(savedGain) + " dB");
-        LMS_SetGaindB(handle_, LMS_CH_RX, 0, static_cast<unsigned>(savedGain));
-    }
-
-    if (!ok)
-        throwLime("LMS_Calibrate failed");
-
-    // LMS_Calibrate may reset LPF and TIA — restore both (TIA-protected).
-    setLpfBwProtected(handle_, currentSampleRate_, kDefaultTia);
-
-    LOG_INFO("Calibration done: " + serial_);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,17 +268,18 @@ void LimeDevice::setSampleRate(double hz) {
 
     currentSampleRate_ = hz;
 
-    // Analog LPF must track sample rate (ExtIO behaviour).
-    setLpfBwProtected(handle_, hz, kDefaultTia);
+    // Analog LPF tracks sample rate — RX (TIA-protected) + TX.
+    for (int ch = 0; ch < 2; ++ch) {
+        setLpfBwProtected(handle_, ch, hz, kDefaultTia);
+        if (LMS_SetLPFBW(handle_, LMS_CH_TX, ch, hz) != 0)
+            LOG_WARN("LMS_SetLPFBW TX ch" + std::to_string(ch) + " failed");
+    }
 
     emit sampleRateChanged(hz);
-    LOG_INFO("Sample rate set: " + std::to_string(hz)
-             + " Hz  LPF=" + std::to_string(hz) + " Hz");
+    LOG_INFO("Sample rate set: " + std::to_string(hz) + " Hz");
 }
 
 double LimeDevice::sampleRate() const {
-    // LMS_GetSampleRate returns RF (ADC) rate, not the host-side rate.
-    // Return the cached host rate that was set via setSampleRate().
     return currentSampleRate_;
 }
 
@@ -296,167 +288,251 @@ QList<double> LimeDevice::supportedSampleRates() const {
 }
 
 // ---------------------------------------------------------------------------
-// IDevice: setFrequency / frequency
+// IDevice: setFrequency / frequency — single-channel backward compat
 // ---------------------------------------------------------------------------
 void LimeDevice::setFrequency(double hz) {
+    setFrequency({ChannelDescriptor::RX, 0}, hz);
+}
+
+// ── Channel-aware ─────────────────────────────────────────────────────────
+void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot set frequency — device not initialized");
 
-    const int antenna = antennaForFrequency(hz);
-    const int prevAntenna = antennaForFrequency(currentFrequency_);
-    if (antenna != prevAntenna) {
-        if (LMS_SetAntenna(handle_, LMS_CH_RX, 0, antenna) != 0)
-            throwLime("LMS_SetAntenna failed");
-        LOG_INFO("Antenna path changed: " + std::string(antennaName(antenna))
-                 + " for " + std::to_string(hz / 1e6) + " MHz");
-    }
+    const int idx = ch.channelIndex;
 
-    if (state_ == DeviceState::Streaming) {
-        // During streaming: don't call LMS_SetLOFrequency from the UI thread —
-        // it would contend with LMS_RecvStream on the same USB handle and freeze
-        // the UI for up to one readBlock timeout. Instead, post the value as a
-        // pending change; readBlock() picks it up and applies it on the worker thread.
-        currentFrequency_ = hz;
-        pendingFrequency_.store(hz);
+    if (ch.direction == ChannelDescriptor::TX) {
+        // TX: use TX antenna path (TX1 = first connector)
+        if (LMS_SetAntenna(handle_, LMS_CH_TX, idx, LMS_PATH_TX1) != 0)
+            LOG_WARN("LMS_SetAntenna TX" + std::to_string(idx) + " failed");
+        if (LMS_SetLOFrequency(handle_, LMS_CH_TX, idx, hz) != 0)
+            throwLime("LMS_SetLOFrequency TX failed");
+        float_type actualLo = 0;
+        if (LMS_GetLOFrequency(handle_, LMS_CH_TX, idx, &actualLo) == 0
+            && std::abs(actualLo - hz) > 1e3)
+            LOG_WARN("TX LO mismatch TX" + std::to_string(idx)
+                     + ": requested " + std::to_string(hz / 1e6)
+                     + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
+        currentTxFrequency_[idx] = hz;
+        LOG_INFO("TX" + std::to_string(idx) + " freq set: "
+                 + std::to_string(hz / 1e6) + " MHz on " + serial_);
         return;
     }
 
-    if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, hz) != 0)
+    // RX path
+    const int antenna = antennaForFrequency(hz);
+    const int prevAntenna = antennaForFrequency(currentFrequency_[idx]);
+    if (antenna != prevAntenna) {
+        if (LMS_SetAntenna(handle_, LMS_CH_RX, idx, antenna) != 0)
+            throwLime("LMS_SetAntenna failed");
+        LOG_INFO("Antenna RX" + std::to_string(idx) + " changed: "
+                 + antennaName(antenna) + " for " + std::to_string(hz / 1e6) + " MHz");
+    }
+
+    if (state_ == DeviceState::Streaming) {
+        currentFrequency_[idx] = hz;
+        pendingFrequency_[idx].store(hz);
+        return;
+    }
+
+    if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, hz) != 0)
         throwLime("LMS_SetLOFrequency failed");
 
-    // Readback actual LO — PLL may not lock at requested frequency
     float_type actualLo = 0;
-    if (LMS_GetLOFrequency(handle_, LMS_CH_RX, 0, &actualLo) == 0
+    if (LMS_GetLOFrequency(handle_, LMS_CH_RX, idx, &actualLo) == 0
         && std::abs(actualLo - hz) > 1e3) {
-        LOG_WARN("LO mismatch: requested " + std::to_string(hz / 1e6)
+        LOG_WARN("LO mismatch RX" + std::to_string(idx)
+                 + ": requested " + std::to_string(hz / 1e6)
                  + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
     }
 
-    currentFrequency_ = hz;
-}
-
-double LimeDevice::frequency() const {
-    return currentFrequency_;
+    currentFrequency_[idx] = hz;
 }
 
 // ---------------------------------------------------------------------------
-// IDevice: setGain / gain (unified dB)
+// IDevice: setGain / gain — single-channel backward compat
 // ---------------------------------------------------------------------------
 void LimeDevice::setGain(double dB) {
+    setGain({ChannelDescriptor::RX, 0}, dB);
+}
+
+// ── Channel-aware ─────────────────────────────────────────────────────────
+void LimeDevice::setGain(ChannelDescriptor ch, double dB) {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot set gain — device not initialized");
 
-    dB = std::clamp(dB, 0.0, kMaxGainDb);
+    const int idx = ch.channelIndex;
 
-    if (LMS_SetGaindB(handle_, LMS_CH_RX, 0, static_cast<unsigned>(dB)) != 0)
+    if (ch.direction == ChannelDescriptor::TX) {
+        dB = std::clamp(dB, 0.0, kMaxTxGainDb);
+        if (LMS_SetGaindB(handle_, LMS_CH_TX, idx, static_cast<unsigned>(dB)) != 0)
+            throwLime("LMS_SetGaindB TX failed");
+        currentTxGainDb_[idx] = dB;
+        LOG_INFO("TX" + std::to_string(idx) + " gain set: "
+                 + std::to_string(dB) + " dB on " + serial_);
+        return;
+    }
+
+    // RX path
+    dB = std::clamp(dB, 0.0, kMaxGainDb);
+    if (LMS_SetGaindB(handle_, LMS_CH_RX, idx, static_cast<unsigned>(dB)) != 0)
         throwLime("LMS_SetGaindB failed");
 
-    // LMS_SetGaindB distributes gain across LNA+PGA but does not write
-    // RCC_CTL_PGA_RBB — the PGA compensation register from the LMS7002M
-    // datasheet.  Without it, PGA baseband filter shape degrades.
-    // Read back the actual PGA value and write the matching RCC.
+    // PGA compensation: LMS_SetGaindB does not write RCC_CTL_PGA_RBB.
+    // After calling LMS_SetGaindB(ch=idx), MAC points to channel idx.
     uint16_t pgaVal = 0;
     LMS_ReadParam(handle_, LMS7_G_PGA_RBB, &pgaVal);
     const int rcc = rccCtlForPga(static_cast<int>(pgaVal));
     LMS_WriteParam(handle_, LMS7_RCC_CTL_PGA_RBB, rcc);
 
-    // LMS_SetGaindB may also overwrite TIA — restore to default.
+    // LMS_SetGaindB may overwrite TIA — restore.
     LMS_WriteParam(handle_, LMS7_G_TIA_RFE, kDefaultTia);
 
-    currentGainDb_ = dB;
-    LOG_INFO("Gain set: " + std::to_string(dB) + " dB  PGA=" + std::to_string(pgaVal)
-             + " RCC=" + std::to_string(rcc) + " TIA=" + std::to_string(kDefaultTia)
-             + " on " + serial_);
+    currentGainDb_[idx] = dB;
+    LOG_INFO("Gain RX" + std::to_string(idx) + ": "
+             + std::to_string(dB) + " dB  PGA=" + std::to_string(pgaVal)
+             + " RCC=" + std::to_string(rcc) + " on " + serial_);
 }
-
-double LimeDevice::gain() const {
-    return currentGainDb_;
-}
-
 
 // ---------------------------------------------------------------------------
-// IDevice: стрим
+// Stream internals
 // ---------------------------------------------------------------------------
-void LimeDevice::setupStream() {
-    if (streamReady_) teardownStream();
+void LimeDevice::setupStream(ChannelDescriptor ch) {
+    if (streams_.count(ch)) teardownStream(ch);
 
-    // Re-enable TX then RX — LMS_Calibrate resets parts of the RF chain.
-    if (LMS_EnableChannel(handle_, LMS_CH_TX, 0, true) != 0)
-        throwLime("LMS_EnableChannel TX (pre-stream) failed");
+    // Re-enable the channel before setup.
+    const bool isTx = (ch.direction == ChannelDescriptor::TX);
+    if (!isTx && LMS_EnableChannel(handle_, LMS_CH_TX, ch.channelIndex, true) != 0)
+        LOG_WARN("LMS_EnableChannel TX" + std::to_string(ch.channelIndex) + " (pre-stream) failed");
+    if (LMS_EnableChannel(handle_, isTx ? LMS_CH_TX : LMS_CH_RX, ch.channelIndex, true) != 0)
+        throwLime("LMS_EnableChannel (pre-stream) failed for ch"
+                  + std::to_string(ch.channelIndex));
 
-    if (LMS_EnableChannel(handle_, LMS_CH_RX, 0, true) != 0)
-        throwLime("LMS_EnableChannel RX (pre-stream) failed");
+    lms_stream_t stream{};
+    stream.channel             = ch.channelIndex;
+    stream.fifoSize            = 1024 * 1024;
+    stream.throughputVsLatency = 1.0f;
+    stream.isTx                = isTx;
+    stream.dataFmt             = lms_stream_t::LMS_FMT_I16;
 
-    streamId_                     = {};
-    streamId_.channel             = 0;
-    streamId_.fifoSize            = 1024 * 1024;
-    streamId_.throughputVsLatency = 1.0f;
-    streamId_.isTx                = false;
-    streamId_.dataFmt             = lms_stream_t::LMS_FMT_I16;
+    if (LMS_SetupStream(handle_, &stream) != 0)
+        throwLime("LMS_SetupStream failed for ch" + std::to_string(ch.channelIndex));
 
-    if (LMS_SetupStream(handle_, &streamId_) != 0)
-        throwLime("LMS_SetupStream failed");
-
-    streamReady_ = true;
-    LOG_DEBUG("RX stream ready: " + serial_);
+    streams_[ch] = stream;
+    LOG_DEBUG("Stream ready: ch" + std::to_string(ch.channelIndex)
+              + (isTx ? " TX" : " RX") + " on " + serial_);
 }
 
-void LimeDevice::teardownStream() {
-    if (!streamReady_) return;
-    LMS_StopStream(&streamId_);
-    LMS_DestroyStream(handle_, &streamId_);
-    streamId_    = {};
-    streamReady_ = false;
-    LOG_DEBUG("RX stream torn down: " + serial_);
+void LimeDevice::teardownStream(ChannelDescriptor ch) {
+    auto it = streams_.find(ch);
+    if (it == streams_.end()) return;
+    LMS_StopStream(&it->second);
+    LMS_DestroyStream(handle_, &it->second);
+    streams_.erase(it);
+    LOG_DEBUG("Stream torn down: ch" + std::to_string(ch.channelIndex)
+              + " on " + serial_);
 }
 
-void LimeDevice::startStream() {
-    // Always teardown+setup before each start so USB packet sizing matches
-    // the current sample rate (may have changed since init or last stream).
-    // This mirrors the old StreamWorker pattern that fixed "TransferPacket
-    // Read failed" on Windows.
-    if (streamReady_) teardownStream();
-    setupStream();
-
-    if (LMS_StartStream(&streamId_) != 0) {
-        teardownStream();
-        throwLime("LMS_StartStream failed");
+void LimeDevice::teardownAllStreams() {
+    for (auto& [ch, stream] : streams_) {
+        LMS_StopStream(&stream);
+        LMS_DestroyStream(handle_, &stream);
     }
-    setState(DeviceState::Streaming);
-    LOG_INFO("LMS_StartStream OK: " + serial_);
+    streams_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// IDevice: single-channel stream — backward compat delegates to ch0
+// ---------------------------------------------------------------------------
+void LimeDevice::startStream() {
+    startStream({ChannelDescriptor::RX, 0});
 }
 
 void LimeDevice::stopStream() {
-    teardownStream();
-    if (state_ == DeviceState::Streaming)
-        setState(DeviceState::Ready);
-    LOG_INFO("Stream stopped: " + serial_);
+    stopStream({ChannelDescriptor::RX, 0});
 }
 
 int LimeDevice::readBlock(int16_t* buffer, int count, int timeoutMs) {
-    // Apply pending LO frequency change on the worker thread — safe because this
-    // is the same thread that owns the LMS_RecvStream call, so no USB contention.
-    const double freq = pendingFrequency_.exchange(kNoFreqPending);
-    if (freq != kNoFreqPending) {
-        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, 0, freq) != 0) {
-            LOG_WARN("LMS_SetLOFrequency (deferred) failed: " + serial_);
-        } else {
-            float_type actualLo = 0;
-            LMS_GetLOFrequency(handle_, LMS_CH_RX, 0, &actualLo);
-            if (std::abs(actualLo - freq) > 1e3)
-                LOG_WARN("LO mismatch (deferred): requested " + std::to_string(freq / 1e6)
-                         + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
-            else
-                LOG_DEBUG("LO updated to " + std::to_string(freq / 1e6) + " MHz");
-        }
-    }
-
-    return LMS_RecvStream(&streamId_, buffer, count, nullptr, timeoutMs);
+    return readBlock({ChannelDescriptor::RX, 0}, buffer, count, timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
-// createAdvancedWidget — зарезервировано для Пути B (прямое управление
-// LNA/TIA/PGA через LMS_WriteParam). Пока возвращает nullptr.
+// IDevice: channel-aware stream
+// ---------------------------------------------------------------------------
+void LimeDevice::startStream(ChannelDescriptor ch) {
+    // Always teardown+setup before each start so USB packet sizing matches
+    // the current sample rate.
+    if (streams_.count(ch)) teardownStream(ch);
+    setupStream(ch);
+
+    auto& stream = streams_[ch];
+    if (LMS_StartStream(&stream) != 0) {
+        teardownStream(ch);
+        throwLime("LMS_StartStream failed for ch" + std::to_string(ch.channelIndex));
+    }
+    setState(DeviceState::Streaming);
+    LOG_INFO("LMS_StartStream OK: ch" + std::to_string(ch.channelIndex)
+             + " on " + serial_);
+}
+
+void LimeDevice::stopStream(ChannelDescriptor ch) {
+    teardownStream(ch);
+    if (streams_.empty() && state_ == DeviceState::Streaming)
+        setState(DeviceState::Ready);
+    LOG_INFO("Stream stopped: ch" + std::to_string(ch.channelIndex)
+             + " on " + serial_);
+}
+
+int LimeDevice::readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) {
+    const int idx = ch.channelIndex;
+
+    // Apply pending LO change on the worker thread — avoids USB contention.
+    const double freq = pendingFrequency_[idx].exchange(kNoFreqPending);
+    if (freq != kNoFreqPending) {
+        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, freq) != 0) {
+            LOG_WARN("LMS_SetLOFrequency (deferred) failed: RX"
+                     + std::to_string(idx) + " on " + serial_);
+        } else {
+            float_type actualLo = 0;
+            LMS_GetLOFrequency(handle_, LMS_CH_RX, idx, &actualLo);
+            if (std::abs(actualLo - freq) > 1e3)
+                LOG_WARN("LO mismatch (deferred) RX" + std::to_string(idx)
+                         + ": requested " + std::to_string(freq / 1e6)
+                         + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
+            else
+                LOG_DEBUG("LO updated: RX" + std::to_string(idx)
+                          + " → " + std::to_string(freq / 1e6) + " MHz");
+        }
+    }
+
+    auto it = streams_.find(ch);
+    if (it == streams_.end()) return -1;
+
+    lms_stream_meta_t meta{};
+    const int n = LMS_RecvStream(&it->second, buffer, count, &meta, timeoutMs);
+    if (n > 0)
+        lastTimestamp_[ch] = meta.timestamp;
+    return n;
+}
+
+uint64_t LimeDevice::lastReadTimestamp(ChannelDescriptor ch) const {
+    auto it = lastTimestamp_.find(ch);
+    return (it != lastTimestamp_.end()) ? it->second : 0;
+}
+
+// ---------------------------------------------------------------------------
+// IDevice: TX write block
+// ---------------------------------------------------------------------------
+int LimeDevice::writeBlock(ChannelDescriptor ch, const int16_t* buffer,
+                            int count, int timeoutMs) {
+    auto it = streams_.find(ch);
+    if (it == streams_.end()) return -1;
+    return LMS_SendStream(&it->second, buffer, count, nullptr,
+                          static_cast<unsigned>(timeoutMs));
+}
+
+// ---------------------------------------------------------------------------
+// createAdvancedWidget — reserved for Path B (direct LNA/TIA/PGA control).
 // ---------------------------------------------------------------------------
 QWidget* LimeDevice::createAdvancedWidget(QWidget* /*parent*/) {
     return nullptr;

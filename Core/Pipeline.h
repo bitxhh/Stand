@@ -27,6 +27,7 @@ public:
 
     // Вызывается из StreamWorker thread
     void dispatchBlock(const int16_t* iq, int count, double sampleRateHz);
+    void dispatchBlock(const int16_t* iq, int count, double sampleRateHz, const BlockMeta& meta);
     void notifyStarted(double sampleRateHz);
     void notifyStopped();
 

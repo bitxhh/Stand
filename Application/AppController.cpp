@@ -2,8 +2,8 @@
 #include "../DSP/DemodRegistry.h"
 #include "Logger.h"
 
-AppController::AppController(IDevice* device, QObject* parent)
-    : QObject(parent), device_(device)
+AppController::AppController(IDevice* device, ChannelDescriptor channel, QObject* parent)
+    : QObject(parent), device_(device), channel_(channel)
 {}
 
 AppController::~AppController() {
@@ -50,7 +50,7 @@ void AppController::startStream(const StreamConfig& cfg) {
 
     // Worker thread
     streamThread_ = new QThread(this);
-    streamWorker_ = new StreamWorker(device_, pipeline_);
+    streamWorker_ = new StreamWorker(device_, pipeline_, channel_);
     streamWorker_->moveToThread(streamThread_);
 
     connect(streamThread_, &QThread::started,  streamWorker_, &StreamWorker::run);
@@ -123,6 +123,20 @@ void AppController::setFftCenterFreq(double mhz) {
     if (fftHandler_) fftHandler_->setCenterFrequency(mhz);
 }
 
+void AppController::addExtraHandler(IPipelineHandler* h) {
+    if (!h || !pipeline_) return;
+    pipeline_->addHandler(h);
+    extraHandlers_.push_back(h);
+}
+
+void AppController::removeExtraHandler(IPipelineHandler* h) {
+    if (!h) return;
+    if (pipeline_) pipeline_->removeHandler(h);
+    extraHandlers_.erase(
+        std::remove(extraHandlers_.begin(), extraHandlers_.end(), h),
+        extraHandlers_.end());
+}
+
 double AppController::snrDb() const {
     return demodHandler_ ? demodHandler_->snrDb() : 0.0;
 }
@@ -152,6 +166,7 @@ void AppController::onStreamFinishedInternal() {
     rawHandlers_.clear();
     for (auto* h : wavHandlers_) delete h;
     wavHandlers_.clear();
+    extraHandlers_.clear();   // not owned here — ClassifierController owns them
 
     if (audioOut_) {
         disconnect(audioOut_, nullptr, this, nullptr);
@@ -180,6 +195,7 @@ void AppController::teardownStream() {
     rawHandlers_.clear();
     for (auto* h : wavHandlers_) delete h;
     wavHandlers_.clear();
+    extraHandlers_.clear();   // not owned here
 
     if (audioOut_) {
         disconnect(audioOut_, nullptr, this, nullptr);

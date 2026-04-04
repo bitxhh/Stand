@@ -10,7 +10,7 @@ set(CMAKE_AUTOUIC ON)
 
 # ─── Qt ───────────────────────────────────────────────────────────────────────
 list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.10.0/mingw_64")
-find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent PrintSupport Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent PrintSupport Multimedia Network)
 
 # ─── LimeSuite ────────────────────────────────────────────────────────────────
 set(LIMESUITE_ROOT "C:/LimeSuite")
@@ -51,6 +51,15 @@ add_executable(Stand
         Application/Application.h
         Application/AppController.cpp
         Application/AppController.h
+        Application/TxController.cpp
+        Application/TxController.h
+        Application/SessionManager.cpp
+        Application/SessionManager.h
+        Application/ClassifierController.cpp
+        Application/ClassifierController.h
+
+        DSP/ClassifierHandler.cpp
+        DSP/ClassifierHandler.h
 
         Hardware/Device.cpp
         Hardware/Device.h
@@ -62,8 +71,12 @@ add_executable(Stand
         Hardware/LimeManager.h
         Hardware/StreamWorker.cpp
         Hardware/StreamWorker.h
+        Hardware/TxWorker.cpp
+        Hardware/TxWorker.h
         Hardware/DeviceController.cpp
         Hardware/DeviceController.h
+        Hardware/LimeSyncController.cpp
+        Hardware/LimeSyncController.h
 
         DSP/FftProcessor.cpp
         DSP/FftProcessor.h
@@ -92,6 +105,8 @@ add_executable(Stand
         DSP/DemodRegistry.h
         DSP/RawFileHandler.cpp
         DSP/RawFileHandler.h
+        DSP/ToneGenerator.cpp
+        DSP/ToneGenerator.h
 
         Audio/FmAudioOutput.cpp
         Audio/FmAudioOutput.h
@@ -120,6 +135,7 @@ target_link_libraries(Stand
         Qt6::Concurrent
         Qt6::PrintSupport
         Qt6::Multimedia
+        Qt6::Network
         qcustomplot
         LimeSuite.lib
         "${FFTW_LIB_DIR}/libfftw3-3.dll.a"
