@@ -2,12 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <QSize>
 #include <QFileDialog>
 #include <QStandardPaths>
 #include "qcustomplot.h"
-#include "Logger.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DeviceDetailWindow — constructor
@@ -73,6 +71,25 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     mainLayout->addWidget(splitter);
     setCentralWidget(central);
 
+    // ── App controller (non-UI: pipeline, handlers, audio, worker thread) ────
+    ctrl_ = new AppController(this->device.get(), this);
+
+    connect(ctrl_, &AppController::fftReady,
+            this,  &DeviceDetailWindow::onFftReady, Qt::QueuedConnection);
+    connect(ctrl_, &AppController::streamError,
+            this,  &DeviceDetailWindow::onStreamError, Qt::QueuedConnection);
+    connect(ctrl_, &AppController::streamFinished,
+            this,  &DeviceDetailWindow::onStreamFinished, Qt::QueuedConnection);
+    connect(ctrl_, &AppController::demodStatus, this,
+            [this](const QString& msg, bool isError) {
+                demodStatusLabel_->setStyleSheet(
+                    isError ? "color: #ff4444; font-size: 11px;"
+                            : "color: #00cc44; font-size: 11px;");
+                demodStatusLabel_->setText(msg);
+                if (isError)
+                    QMessageBox::critical(this, "Audio", msg);
+            });
+
     connectionTimer = new QTimer(this);
     connectionTimer->setInterval(1000);
     connect(connectionTimer, &QTimer::timeout, this, &DeviceDetailWindow::checkDeviceConnection);
@@ -89,7 +106,7 @@ DeviceDetailWindow::~DeviceDetailWindow() {
     // members, it would access freed memory via the this pointer.
     connectionTimer->stop();
     connectionWatcher.waitForFinished();   // blocks until any pending scan completes
-    teardownStream();
+    // AppController destructor handles stream teardown (it's a child of this)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -250,7 +267,7 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
         if (!controller_->isInitialized()) return;
         const double mhz = freqSpinBox->value();
         controller_->setFrequency(mhz);
-        if (fftHandler_) fftHandler_->setCenterFrequency(mhz);
+        ctrl_->setFftCenterFreq(mhz);
         if (centerLine_) {
             centerLine_->start->setCoords(mhz, -130.0);
             centerLine_->end->setCoords  (mhz,   10.0);
@@ -368,19 +385,19 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     // Volume → audio sink
     connect(demodVolSlider_, &QSlider::valueChanged, this, [this](int v) {
         demodVolLabel_->setText(QString("%1%").arg(v));
-        if (audioOut_) audioOut_->setVolume(static_cast<float>(v) / 100.0f);
+        ctrl_->setVolume(static_cast<float>(v) / 100.0f);
     });
 
     // FM BW change
     connect(fmBwSpin_, &QDoubleSpinBox::valueChanged, this, [this](double bwKHz) {
         updateFilterBand(modeCombo_->currentIndex() != 0);
-        if (fmDemodHandler_) fmDemodHandler_->setBandwidth(bwKHz * 1000.0);
+        ctrl_->setDemodParam("Bandwidth", bwKHz * 1000.0);
     });
 
     // AM BW change
     connect(amBwSpin_, &QDoubleSpinBox::valueChanged, this, [this](double bwKHz) {
         updateFilterBand(modeCombo_->currentIndex() != 0);
-        if (amDemodHandler_) amDemodHandler_->setBandwidth(bwKHz * 1000.0);
+        ctrl_->setDemodParam("Bandwidth", bwKHz * 1000.0);
     });
 
     // When LO changes → update VFO range and filter band
@@ -423,8 +440,7 @@ QWidget* DeviceDetailWindow::createDeviceFFTpage() {
     connect(demodVfoSpin_, &QDoubleSpinBox::valueChanged, this, [this](double vfoMHz) {
         updateFilterBand(modeCombo_->currentIndex() != 0);
         const double offsetHz = (vfoMHz - freqSpinBox->value()) * 1e6;
-        if (fmDemodHandler_) fmDemodHandler_->setOffset(offsetHz);
-        if (amDemodHandler_) amDemodHandler_->setOffset(offsetHz);
+        ctrl_->setDemodOffset(offsetHz);
     });
 
     // ── Signal level indicator ────────────────────────────────────────────────
@@ -730,105 +746,47 @@ void DeviceDetailWindow::openRecordSettings() {
 // Stream control
 // ═══════════════════════════════════════════════════════════════════════════════
 void DeviceDetailWindow::startStream() {
-    if (streamWorker) return;
+    if (ctrl_->isStreaming()) return;
 
-    // Always sync LO to the spin-box value before streaming — the user may have
-    // typed a frequency without pressing Apply, and we don't want to stream on
-    // the wrong frequency silently.
+    // Always sync LO to the spin-box value before streaming
     if (controller_->isInitialized())
         controller_->setFrequency(freqSpinBox->value());
 
-    const int demodMode = modeCombo_ ? modeCombo_->currentIndex() : 0;
-    LOG_INFO("startStream: record=" + std::to_string(recordCheckBox->isChecked())
-             + " wav=" + std::to_string(wavCheckBox->isChecked())
-             + " mode=" + std::to_string(demodMode)
-             + " lo=" + std::to_string(freqSpinBox->value()) + " MHz");
+    // ── Build config ──────────────────────────────────────────────────────────
+    AppController::StreamConfig cfg;
+    cfg.loFreqMHz = freqSpinBox->value();
+    cfg.recordRaw = recordCheckBox->isChecked();
+    cfg.rawPath   = recordPath_;
+    cfg.exportWav = wavCheckBox->isChecked();
+    cfg.wavPath   = wavPath_;
+    cfg.wavOffset = wavOffset_;
+    cfg.wavBw     = wavBw_;
 
-    // ── Build pipeline ────────────────────────────────────────────────────────
-    pipeline_ = new Pipeline(this);
+    const int mode = modeCombo_ ? modeCombo_->currentIndex() : 0;
+    if (mode == 1)      cfg.demodMode = "FM";
+    else if (mode == 2) cfg.demodMode = "AM";
 
-    // FFT handler — always active
-    fftHandler_ = new FftHandler(this);
-    fftHandler_->setCenterFrequency(freqSpinBox->value());
-    pipeline_->addHandler(fftHandler_);
+    if (mode > 0 && demodVfoSpin_)
+        cfg.demodOffsetHz = (demodVfoSpin_->value() - freqSpinBox->value()) * 1e6;
 
-    connect(fftHandler_, &FftHandler::fftReady,
-            this,        &DeviceDetailWindow::onFftReady,
-            Qt::QueuedConnection);
+    ctrl_->startStream(cfg);
 
-    // Raw .raw recording
-    if (recordCheckBox->isChecked()) {
-        auto* rawHandler = new RawFileHandler(recordPath_);
-        pipeline_->addHandler(rawHandler);
-        rawHandlers_.push_back(rawHandler);
+    // Connect stream status to label (forwarded through AppController)
+    connect(ctrl_, &AppController::streamStatus,
+            streamStatusLabel, &QLabel::setText, Qt::QueuedConnection);
+
+    // Apply current demod params after handler is created
+    if (mode == 1) {
+        ctrl_->setDemodParam("Bandwidth", fmBwSpin_->value() * 1000.0);
+        ctrl_->setDemodParam("De-emphasis", fmDeemphCombo->currentData().toDouble());
+    } else if (mode == 2) {
+        ctrl_->setDemodParam("Bandwidth", amBwSpin_->value() * 1000.0);
     }
-
-    // Bandpass WAV export
-    if (wavCheckBox->isChecked()) {
-        auto* wavHandler = new BandpassHandler(
-            wavPath_, wavOffset_, wavBw_);
-        pipeline_->addHandler(wavHandler);
-        wavHandlers_.push_back(wavHandler);
-    }
-
-    // Demodulation (FM or AM)
-    if (demodMode > 0) {
-        const double offsetHz = demodVfoSpin_
-                                ? (demodVfoSpin_->value() - freqSpinBox->value()) * 1e6
-                                : 0.0;
-
-        delete audioOut_;
-        audioOut_ = new FmAudioOutput(this);
-        audioOut_->setVolume(static_cast<float>(demodVolSlider_->value()) / 100.0f);
-
-        connect(audioOut_, &FmAudioOutput::statusChanged, this,
-                [this](const QString& msg, bool isError) {
-                    demodStatusLabel_->setStyleSheet(
-                        isError ? "color: #ff4444; font-size: 11px;"
-                                : "color: #00cc44; font-size: 11px;");
-                    demodStatusLabel_->setText(msg);
-                    if (isError)
-                        QMessageBox::critical(this, "Audio", msg);
-                });
-
-        if (demodMode == 1) {
-            // FM
-            const double tau  = fmDeemphCombo->currentData().toDouble();
-            const double bwHz = fmBwSpin_->value() * 1000.0;
-            fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
-            connect(fmDemodHandler_, &FmDemodHandler::audioReady,
-                    audioOut_,       &FmAudioOutput::push,
-                    Qt::QueuedConnection);
-            pipeline_->addHandler(fmDemodHandler_);
-        } else {
-            // AM
-            const double bwHz = amBwSpin_->value() * 1000.0;
-            amDemodHandler_ = new AmDemodHandler(offsetHz, bwHz, this);
-            connect(amDemodHandler_, &AmDemodHandler::audioReady,
-                    audioOut_,       &FmAudioOutput::push,
-                    Qt::QueuedConnection);
-            pipeline_->addHandler(amDemodHandler_);
-        }
-
+    if (mode > 0) {
+        ctrl_->setVolume(static_cast<float>(demodVolSlider_->value()) / 100.0f);
         demodStatusLabel_->setStyleSheet("color: gray; font-size: 11px;");
-        demodStatusLabel_->setText(demodMode == 1 ? "FM: waiting for first audio block\u2026"
-                                                  : "AM: waiting for first audio block\u2026");
+        demodStatusLabel_->setText(cfg.demodMode + ": waiting for first audio block\u2026");
     }
-
-    // ── Start worker thread ───────────────────────────────────────────────────
-    streamThread = new QThread(this);
-    streamWorker = new StreamWorker(device.get(), pipeline_);
-    streamWorker->moveToThread(streamThread);
-
-    connect(streamThread, &QThread::started,            streamWorker, &StreamWorker::run);
-    connect(streamWorker, &StreamWorker::statusMessage, streamStatusLabel, &QLabel::setText,                 Qt::QueuedConnection);
-    connect(streamWorker, &StreamWorker::errorOccurred, this,         &DeviceDetailWindow::onStreamError,    Qt::QueuedConnection);
-    connect(streamWorker, &StreamWorker::finished,      this,         &DeviceDetailWindow::onStreamFinished, Qt::QueuedConnection);
-    connect(streamWorker, &StreamWorker::finished,      streamThread, &QThread::quit,                        Qt::QueuedConnection);
-    connect(streamThread, &QThread::finished,           streamWorker, &QObject::deleteLater);
-    connect(streamThread, &QThread::finished,           streamThread, &QObject::deleteLater);
-
-    streamThread->start();
 
     // LMS_GetDeviceList (called by watchdog) causes USB interference during streaming.
     connectionTimer->stop();
@@ -840,65 +798,28 @@ void DeviceDetailWindow::startStream() {
     }
     metricsTimer_->start(500);
 
-    plotUserZoomed_ = false;   // new stream may have different LO/SR — reset zoom
+    plotUserZoomed_ = false;
     calibrateButton->setEnabled(false);
     streamStartButton->setEnabled(false);
     streamStopButton->setEnabled(true);
     streamStatusLabel->setStyleSheet("color: #00cc44;");
-    streamStatusLabel->setText("Streaming…");
+    streamStatusLabel->setText("Streaming\u2026");
 }
 
 void DeviceDetailWindow::stopStream() {
-    if (streamWorker) streamWorker->stop();
+    ctrl_->stopStream();
     streamStopButton->setEnabled(false);
 }
 
-void DeviceDetailWindow::teardownStream() {
-    if (streamWorker) streamWorker->stop();
-    if (streamThread) { streamThread->quit(); streamThread->wait(3000); }
-    streamWorker = nullptr;
-    streamThread = nullptr;
-
-    if (pipeline_) {
-        pipeline_->clearHandlers();
-        delete pipeline_;
-        pipeline_ = nullptr;
-    }
-
-    if (metricsTimer_) metricsTimer_->stop();
-
-    delete fftHandler_;      fftHandler_     = nullptr;
-    delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
-    delete amDemodHandler_;  amDemodHandler_ = nullptr;
-
-    for (auto* h : rawHandlers_) delete h;
-    rawHandlers_.clear();
-    for (auto* h : wavHandlers_) delete h;
-    wavHandlers_.clear();
-
-    if (audioOut_) {
-        disconnect(audioOut_, nullptr, this, nullptr);
-        audioOut_->teardown();
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// FM metrics
+// Demod metrics
 // ═══════════════════════════════════════════════════════════════════════════════
 void DeviceDetailWindow::updateDemodMetrics() {
     if (!demodLevelLabel_) return;
+    if (!ctrl_->demodHandler()) return;
 
-    // Read SNR from whichever handler is active
-    double snr = 0.0, ifRms = 0.0;
-    if (fmDemodHandler_) {
-        snr   = fmDemodHandler_->snrDb();
-        ifRms = fmDemodHandler_->ifRms();
-    } else if (amDemodHandler_) {
-        snr   = amDemodHandler_->snrDb();
-        ifRms = amDemodHandler_->ifRms();
-    } else {
-        return;
-    }
+    const double snr   = ctrl_->snrDb();
+    const double ifRms = ctrl_->ifRms();
 
     constexpr int    kBlocks  = 10;
     constexpr double kSnrMax  = 15.0;
@@ -927,21 +848,6 @@ void DeviceDetailWindow::updateDemodMetrics() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Demodulator mode switching
 // ═══════════════════════════════════════════════════════════════════════════════
-void DeviceDetailWindow::teardownDemodHandler() {
-    if (pipeline_ && fmDemodHandler_) {
-        pipeline_->removeHandler(fmDemodHandler_);
-        delete fmDemodHandler_;
-        fmDemodHandler_ = nullptr;
-    }
-    if (pipeline_ && amDemodHandler_) {
-        pipeline_->removeHandler(amDemodHandler_);
-        delete amDemodHandler_;
-        amDemodHandler_ = nullptr;
-    }
-    if (audioOut_) audioOut_->teardown();
-    if (demodStatusLabel_) demodStatusLabel_->setText("");
-}
-
 void DeviceDetailWindow::onModeChanged(int index) {
     const bool active = (index != 0);
     const bool isFm   = (index == 1);
@@ -960,49 +866,32 @@ void DeviceDetailWindow::onModeChanged(int index) {
     updateFilterBand(active);
 
     // Teardown current handler
-    teardownDemodHandler();
+    ctrl_->teardownDemod();
+    if (demodStatusLabel_) demodStatusLabel_->setText("");
 
-    if (!active || !pipeline_) return;
+    if (!active || !ctrl_->isStreaming()) return;
 
-    // Create audio output
-    delete audioOut_;
-    audioOut_ = new FmAudioOutput(this);
-    audioOut_->setVolume(static_cast<float>(demodVolSlider_->value()) / 100.0f);
-
-    connect(audioOut_, &FmAudioOutput::statusChanged, this,
-            [this](const QString& msg, bool isError) {
-                demodStatusLabel_->setStyleSheet(
-                    isError ? "color: #ff4444; font-size: 11px;"
-                            : "color: #00cc44; font-size: 11px;");
-                demodStatusLabel_->setText(msg);
-                if (isError)
-                    QMessageBox::critical(this, "Audio", msg);
-            });
-
+    // Create new demod handler via registry
     const double offsetHz = demodVfoSpin_
                             ? (demodVfoSpin_->value() - freqSpinBox->value()) * 1e6
                             : 0.0;
 
+    QString mode;
+    if (isFm)      mode = "FM";
+    else if (isAm) mode = "AM";
+
+    ctrl_->setDemodMode(mode, offsetHz);
+
     if (isFm) {
-        const double tau  = fmDeemphCombo->currentData().toDouble();
-        const double bwHz = fmBwSpin_->value() * 1000.0;
-        fmDemodHandler_ = new FmDemodHandler(offsetHz, tau, bwHz, this);
-        connect(fmDemodHandler_, &FmDemodHandler::audioReady,
-                audioOut_,       &FmAudioOutput::push,
-                Qt::QueuedConnection);
-        pipeline_->addHandler(fmDemodHandler_);
-        demodStatusLabel_->setText("FM: waiting for first audio block\u2026");
+        ctrl_->setDemodParam("Bandwidth", fmBwSpin_->value() * 1000.0);
+        ctrl_->setDemodParam("De-emphasis", fmDeemphCombo->currentData().toDouble());
     } else {
-        const double bwHz = amBwSpin_->value() * 1000.0;
-        amDemodHandler_ = new AmDemodHandler(offsetHz, bwHz, this);
-        connect(amDemodHandler_, &AmDemodHandler::audioReady,
-                audioOut_,       &FmAudioOutput::push,
-                Qt::QueuedConnection);
-        pipeline_->addHandler(amDemodHandler_);
-        demodStatusLabel_->setText("AM: waiting for first audio block\u2026");
+        ctrl_->setDemodParam("Bandwidth", amBwSpin_->value() * 1000.0);
     }
+    ctrl_->setVolume(static_cast<float>(demodVolSlider_->value()) / 100.0f);
 
     demodStatusLabel_->setStyleSheet("color: gray; font-size: 11px;");
+    demodStatusLabel_->setText(mode + ": waiting for first audio block\u2026");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1035,36 +924,17 @@ void DeviceDetailWindow::onStreamError(const QString& error) {
 }
 
 void DeviceDetailWindow::onStreamFinished() {
+    // Cleanup is already done by AppController before emitting streamFinished.
     if (metricsTimer_) metricsTimer_->stop();
 
-    // streamWorker/streamThread are deleted via deleteLater connected to QThread::finished
-    streamWorker = nullptr;
-    streamThread = nullptr;
-
-    if (pipeline_) {
-        pipeline_->clearHandlers();
-        delete pipeline_;
-        pipeline_ = nullptr;
-    }
-
-    delete fftHandler_;      fftHandler_     = nullptr;
-    delete fmDemodHandler_;  fmDemodHandler_ = nullptr;
-    delete amDemodHandler_;  amDemodHandler_ = nullptr;
-
-    for (auto* h : rawHandlers_) delete h;
-    rawHandlers_.clear();
-    for (auto* h : wavHandlers_) delete h;
-    wavHandlers_.clear();
+    // Disconnect streamStatus so stale connection doesn't persist across streams
+    disconnect(ctrl_, &AppController::streamStatus, streamStatusLabel, nullptr);
 
     calibrateButton->setEnabled(controller_->isInitialized());
     streamStartButton->setEnabled(controller_->isInitialized());
     streamStopButton->setEnabled(false);
     streamStatusLabel->setStyleSheet("color: gray;");
     streamStatusLabel->setText("Idle");
-    if (audioOut_) {
-        disconnect(audioOut_, nullptr, this, nullptr);
-        audioOut_->teardown();
-    }
     if (demodStatusLabel_) demodStatusLabel_->setText("");
     if (demodLevelLabel_)  demodLevelLabel_->setText("\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF");
 
@@ -1131,7 +1001,7 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
         });
     if (!connected) {
         connectionTimer->stop();
-        teardownStream();
+        ctrl_->stopStream();
         // Defer the signal so we fully unwind the QFutureWatcher callback
         // before the deviceDisconnected handler opens a QMessageBox (which
         // would re-enter the event loop while still on the watcher's stack).

@@ -16,7 +16,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
-#include <QThread>
+
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -25,17 +25,8 @@
 #include <memory>
 
 #include "../Core/IDeviceManager.h"
-#include "../Core/Pipeline.h"
-#include "../Hardware/StreamWorker.h"
 #include "../Hardware/DeviceController.h"
-#include "../DSP/FftHandler.h"
-#include "../DSP/FmDemodHandler.h"
-#include "../DSP/AmDemodHandler.h"
-#include "../DSP/RawFileHandler.h"
-#include "../DSP/BandpassHandler.h"
-#include "../Audio/FmAudioOutput.h"
-
-#include <vector>
+#include "AppController.h"
 
 class QCustomPlot;
 class QCPItemLine;
@@ -134,22 +125,11 @@ private:
     QLabel*         amBwLabel_{nullptr};
     QDoubleSpinBox* amBwSpin_{nullptr};
 
-    FmAudioOutput*  audioOut_{nullptr};
-
     // ── Spectrum filter band ──────────────────────────────────────────────────
     QCPItemRect*    vfoBand_{nullptr};
 
-    // ── Pipeline ──────────────────────────────────────────────────────────────
-    QThread*        streamThread{nullptr};
-    StreamWorker*   streamWorker{nullptr};
-    Pipeline*       pipeline_{nullptr};
-    FftHandler*     fftHandler_{nullptr};
-    FmDemodHandler* fmDemodHandler_{nullptr};
-    AmDemodHandler* amDemodHandler_{nullptr};
-
-    // Non-QObject handlers — owned by DeviceDetailWindow, deleted in teardownStream
-    std::vector<RawFileHandler*>     rawHandlers_;
-    std::vector<BandpassHandler*>    wavHandlers_;
+    // ── App controller (owns Pipeline, handlers, audio, worker thread) ───────
+    AppController*  ctrl_{nullptr};
 
     // ── Plot zoom state ───────────────────────────────────────────────────────
     // True when the user has scrolled in — onFftReady skips rescale to keep zoom.
@@ -160,7 +140,6 @@ private:
     QTimer* metricsTimer_{nullptr};
     void    updateDemodMetrics();
     void    onModeChanged(int index);
-    void    teardownDemodHandler();
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();
@@ -168,7 +147,6 @@ private:
     QWidget* createDeviceFFTpage();
     void     refreshCurrentSampleRate() const;
     void     setupFftPlot();
-    void     teardownStream();
     void     updateFilterBand(bool visible);
     void     openRecordSettings();
 

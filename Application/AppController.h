@@ -1,0 +1,84 @@
+#pragma once
+
+#include "../Core/Pipeline.h"
+#include "../DSP/FftHandler.h"
+#include "../DSP/BaseDemodHandler.h"
+#include "../DSP/RawFileHandler.h"
+#include "../DSP/BandpassHandler.h"
+#include "../Audio/FmAudioOutput.h"
+#include "../Hardware/StreamWorker.h"
+
+#include <QObject>
+#include <QThread>
+#include <vector>
+
+class IDevice;
+
+// ---------------------------------------------------------------------------
+// AppController — owns Pipeline, StreamWorker, handlers, audio output.
+//
+// No widgets. All cross-thread wiring (QueuedConnections) is set up here.
+// DeviceDetailWindow only calls public methods and connects to signals.
+// ---------------------------------------------------------------------------
+class AppController : public QObject {
+    Q_OBJECT
+
+public:
+    struct StreamConfig {
+        double  loFreqMHz{102.0};
+        bool    recordRaw{false};
+        QString rawPath;
+        bool    exportWav{false};
+        QString wavPath;
+        double  wavOffset{0.0};
+        double  wavBw{100'000.0};
+        QString demodMode;        // "" = no demod, "FM", "AM", ...
+        double  demodOffsetHz{0.0};
+    };
+
+    explicit AppController(IDevice* device, QObject* parent = nullptr);
+    ~AppController() override;
+
+    // ── Stream lifecycle ─────────────────────────────────────────────────────
+    void startStream(const StreamConfig& cfg);
+    void stopStream();
+    [[nodiscard]] bool isStreaming() const { return streamWorker_ != nullptr; }
+
+    // ── Demodulator ──────────────────────────────────────────────────────────
+    void setDemodMode(const QString& mode, double offsetHz);
+    void teardownDemod();
+    void setDemodParam(const QString& name, double value);
+    void setDemodOffset(double hz);
+    void setVolume(float vol);
+
+    // ── FFT ──────────────────────────────────────────────────────────────────
+    void setFftCenterFreq(double mhz);
+
+    // ── Metrics ──────────────────────────────────────────────────────────────
+    [[nodiscard]] BaseDemodHandler* demodHandler() const { return demodHandler_; }
+    [[nodiscard]] double snrDb() const;
+    [[nodiscard]] double ifRms() const;
+
+signals:
+    void fftReady(FftFrame frame);
+    void demodStatus(const QString& msg, bool isError);
+    void streamStatus(const QString& msg);
+    void streamError(const QString& error);
+    void streamFinished();
+
+private:
+    void teardownStream();
+    void onStreamFinishedInternal();
+
+    IDevice*          device_;
+    Pipeline*         pipeline_{nullptr};
+    QThread*          streamThread_{nullptr};
+    StreamWorker*     streamWorker_{nullptr};
+    FftHandler*       fftHandler_{nullptr};
+    BaseDemodHandler* demodHandler_{nullptr};
+    FmAudioOutput*    audioOut_{nullptr};
+    float             volume_{0.8f};
+
+    std::vector<RawFileHandler*>  rawHandlers_;
+    std::vector<BandpassHandler*> wavHandlers_;
+};

@@ -49,6 +49,8 @@ add_executable(Stand
 
         Application/Application.cpp
         Application/Application.h
+        Application/AppController.cpp
+        Application/AppController.h
 
         Hardware/Device.cpp
         Hardware/Device.h
