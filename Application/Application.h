@@ -16,9 +16,9 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
-
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVector>
 #include <QWidget>
 #include <QtConcurrent/QtConcurrent>
 
@@ -27,12 +27,9 @@
 #include "../Core/IDeviceManager.h"
 #include "../Hardware/DeviceController.h"
 #include "AppController.h"
-#include "ClassifierController.h"
+#include "ChannelPanel.h"
 #include "SessionManager.h"
 
-class QCustomPlot;
-class QCPItemLine;
-class QCPItemRect;
 class TxController;
 
 class DeviceDetailWindow : public QMainWindow {
@@ -55,14 +52,11 @@ private slots:
     void onControllerStatus(const QString& message);
     void onControllerError(const QString& message);
 
-    // ── FFT / stream ──────────────────────────────────────────────────────────
+    // ── Stream ────────────────────────────────────────────────────────────────
     void startStream();
     void stopStream();
-    void onFftReady(FftFrame frame);
     void onStreamError(const QString& error);
     void onStreamFinished();
-    void onFreqSliderChanged(int value);
-    void onFreqSpinChanged(double value);
 
 private:
     std::shared_ptr<IDevice> device;
@@ -91,60 +85,19 @@ private:
     QSlider*     gainSlider_{nullptr};
     QLabel*      gainValueLabel_{nullptr};
 
-    // ── FFT page ──────────────────────────────────────────────────────────────
-    QCustomPlot*    fftPlot{nullptr};
-    QCPItemLine*    centerLine_{nullptr};
-    QPushButton*    streamStartButton{nullptr};
-    QPushButton*    streamStopButton{nullptr};
-    QLabel*         streamStatusLabel{nullptr};
-    QDoubleSpinBox* freqSpinBox{nullptr};
-    QSlider*        freqSlider{nullptr};
+    // ── FFT page — stream controls ────────────────────────────────────────────
+    QPushButton* streamStartButton{nullptr};
+    QPushButton* streamStopButton{nullptr};
+    QLabel*      streamStatusLabel{nullptr};
 
-    // Recording
-    QCheckBox*  recordCheckBox{nullptr};
-    QCheckBox*  wavCheckBox{nullptr};
+    // ── Per-channel panels — one per RX channel from device->availableChannels() ──
+    QVector<ChannelPanel*> channelPanels_;
 
-    // Recording settings (stored as values, edited via dialog)
-    QString recordPath_;
-    QString wavPath_;
-    double  wavOffset_{0.0};
-    double  wavBw_{100'000.0};
+    // ── Plot render timer (delegates to each ChannelPanel::replotIfDirty()) ───
+    QTimer* plotTimer_{nullptr};
 
-    // ── Demodulator (FM / AM) ────────────────────────────────────────────────
-    QComboBox*      modeCombo_{nullptr};       // "Off" / "FM" / "AM"
-    QDoubleSpinBox* demodVfoSpin_{nullptr};    // VFO absolute freq (MHz)
-    QSlider*        demodVolSlider_{nullptr};  // volume 0-100
-    QLabel*         demodVolLabel_{nullptr};   // volume %
-    QLabel*         demodStatusLabel_{nullptr};
-    QLabel*         demodLevelLabel_{nullptr}; // SNR bar
-
-    // FM-specific (shown only in FM mode)
-    QLabel*         fmBwLabel_{nullptr};
-    QDoubleSpinBox* fmBwSpin_{nullptr};
-    QLabel*         fmDeemphLabel_{nullptr};
-    QComboBox*      fmDeemphCombo{nullptr};
-
-    // AM-specific (shown only in AM mode)
-    QLabel*         amBwLabel_{nullptr};
-    QDoubleSpinBox* amBwSpin_{nullptr};
-
-    // ── Spectrum filter band ──────────────────────────────────────────────────
-    QCPItemRect*    vfoBand_{nullptr};
-
-    // ── App controller RX0 (owns Pipeline, handlers, audio, worker thread) ──
-    AppController*  ctrl_{nullptr};
-
-    // ── Dual RX (RX1) ────────────────────────────────────────────────────────
-    QCheckBox*      dualRxCheck_{nullptr};
-    QCustomPlot*    fftPlot1_{nullptr};
-    QCPItemLine*    centerLine1_{nullptr};
-    QDoubleSpinBox* freqSpinBox1_{nullptr};
-    AppController*  ctrl1_{nullptr};
-
-    // ── Classifier ───────────────────────────────────────────────────────────
-    ClassifierController* classifierCtrl_{nullptr};
-    QCheckBox*            classifierCheck_{nullptr};
-    QLabel*               classifierLabel_{nullptr};
+    // ── Metrics timer (delegates to each ChannelPanel::updateMetrics()) ───────
+    QTimer* metricsTimer_{nullptr};
 
     // ── TX page ───────────────────────────────────────────────────────────────
     QWidget*        txPage_{nullptr};
@@ -158,29 +111,13 @@ private:
     QLabel*         txStatusLabel_{nullptr};
     TxController*   txCtrl_{nullptr};
 
-    // ── Plot zoom state ───────────────────────────────────────────────────────
-    // True when the user has scrolled in — onFftReady skips rescale to keep zoom.
-    // Reset by double-click or by zooming back out to the full capture band.
-    bool plotUserZoomed_{false};
-
-    // ── Metrics ───────────────────────────────────────────────────────────────
-    QTimer* metricsTimer_{nullptr};
-    void    updateDemodMetrics();
-    void    onModeChanged(int index);
-
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();
     QWidget* createDeviceControlPage();
     QWidget* createDeviceFFTpage();
     QWidget* createTxPage();
-    void     stopAllStreams();   // stops RX0 + RX1 + TX before calibrate/setSampleRate
+    void     stopAllStreams();
     void     refreshCurrentSampleRate() const;
-    void     setupFftPlot();
-    void     setupFftPlot1();
-    void     updateFilterBand(bool visible);
-    void     openRecordSettings();
-    void     onFftReady1(FftFrame frame);
-    void     onDualRxToggled(bool enabled);
 
     static constexpr double kFreqMinMHz     =   30.0;
     static constexpr double kFreqMaxMHz     = 3800.0;

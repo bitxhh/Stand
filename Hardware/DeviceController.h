@@ -27,11 +27,14 @@ public:
 
 public slots:
     void initDevice();
-    void calibrate(double sampleRateHz);   // setSampleRate(hz) + calibrate()
+    void calibrate(double sampleRateHz, const QList<ChannelDescriptor>& channels = {});
 
     void setSampleRate(double sampleRateHz);
 
-    void setGain(double dB);   // 0–68.5 dB → IDevice::setGain()
+    void setGain(double dB);   // 0–68.5 dB → IDevice::setGain() (channel 0, backward compat)
+
+    // Channel-aware gain — для RX1, TX и будущих каналов
+    void setGainChannel(ChannelDescriptor ch, double dB);
 
     // freqMHz — значение из спинбокса (30..3800 МГц), применяется к RX channel 0
     void setFrequency(double freqMHz);

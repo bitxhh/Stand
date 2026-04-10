@@ -197,8 +197,9 @@ void LimeDevice::init() {
             throwLime("LMS_SetLOFrequency RX" + std::to_string(ch) + " failed");
     }
 
-    // Warm up WinUSB I/O context for channel 0 (required before worker-thread start).
-    setupStream({ChannelDescriptor::RX, 0});
+    // Warm up WinUSB I/O context for both RX channels (required before worker-thread start).
+    for (int ch = 0; ch < 2; ++ch)
+        setupStream({ChannelDescriptor::RX, ch});
 
     setState(DeviceState::Ready);
     LOG_INFO("LimeDevice ready: " + serial_);
@@ -220,38 +221,82 @@ void LimeDevice::calibrateChannel(int idx) {
     LOG_INFO("Calibrating ch" + std::to_string(idx)
              + " on " + serial_ + " at " + std::to_string(calBw) + " Hz");
 
-    const bool ok = (LMS_Calibrate(handle_, LMS_CH_RX, idx, calBw, 0) == 0);
-
-    if (savedGain > 0.0) {
-        LOG_INFO("Calibrate ch" + std::to_string(idx)
-                 + ": restoring gain to " + std::to_string(savedGain) + " dB");
-        LMS_SetGaindB(handle_, LMS_CH_RX, idx, static_cast<unsigned>(savedGain));
+    static constexpr int kMaxCalRetries = 3;
+    bool ok = false;
+    for (int attempt = 1; attempt <= kMaxCalRetries; ++attempt) {
+        ok = (LMS_Calibrate(handle_, LMS_CH_RX, idx, calBw, 0) == 0);
+        if (ok) break;
+        if (attempt < kMaxCalRetries) {
+            LOG_WARN("LMS_Calibrate ch" + std::to_string(idx)
+                     + " attempt " + std::to_string(attempt) + " failed — retrying in 200 ms");
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
     }
 
+    // Всегда восстанавливаем усиление — LMS_Calibrate сбрасывает регистры LNA/PGA/TIA.
+    // Даже при savedGain == 0 нужно выставить регистры в известное состояние.
+    LOG_INFO("Calibrate ch" + std::to_string(idx)
+             + ": restoring gain to " + std::to_string(savedGain) + " dB");
+    LMS_SetGaindB(handle_, LMS_CH_RX, idx, static_cast<unsigned>(savedGain));
+
+    // PGA RCC_CTL компенсация — аналогично setGain().
+    uint16_t pgaVal = 0;
+    LMS_ReadParam(handle_, LMS7_G_PGA_RBB, &pgaVal);
+    LMS_WriteParam(handle_, LMS7_RCC_CTL_PGA_RBB, rccCtlForPga(static_cast<int>(pgaVal)));
+
     if (!ok)
-        throwLime("LMS_Calibrate ch" + std::to_string(idx) + " failed");
+        throwLime("LMS_Calibrate ch" + std::to_string(idx) + " failed after "
+                  + std::to_string(kMaxCalRetries) + " attempts");
 
     setLpfBwProtected(handle_, idx, currentSampleRate_, kDefaultTia);
     LOG_INFO("Calibration ch" + std::to_string(idx) + " done: " + serial_);
 }
 
-void LimeDevice::calibrate() {
+void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels) {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot calibrate — device not initialized");
 
-    calibrateChannel(0);
-    calibrateChannel(1);
+    // LMS_Calibrate internally resets FPGA/streaming state, which can invalidate
+    // any lms_stream_t handles we already hold. Teardown cleanly BEFORE calibration
+    // (handles still valid), then rebuild the warm-up handles afterwards so the next
+    // prepareStream/startStream sequence works against fresh handles.
+    teardownAllStreams();
+
+    // Determine which channels to calibrate.
+    // Empty list = calibrate everything (default, backward-compatible).
+    bool calibrateRx[2] = {true, true};
+    bool calibrateTx    = true;
+    if (!channels.isEmpty()) {
+        calibrateRx[0] = calibrateRx[1] = false;
+        calibrateTx = false;
+        for (const auto& ch : channels) {
+            if (ch.direction == ChannelDescriptor::RX && ch.channelIndex < 2)
+                calibrateRx[ch.channelIndex] = true;
+            else if (ch.direction == ChannelDescriptor::TX)
+                calibrateTx = true;
+        }
+    }
+
+    if (calibrateRx[0]) calibrateChannel(0);
+    if (calibrateRx[1]) calibrateChannel(1);
 
     // TX calibration (non-fatal — some hardware units don't support it cleanly).
-    const double calBw = std::max(currentSampleRate_, 2.5e6);
-    LOG_INFO("Calibrating TX0 on " + serial_ + " at " + std::to_string(calBw) + " Hz");
-    if (LMS_Calibrate(handle_, LMS_CH_TX, 0, calBw, 0) == 0) {
-        if (LMS_SetLPFBW(handle_, LMS_CH_TX, 0, currentSampleRate_) != 0)
-            LOG_WARN("LMS_SetLPFBW TX0 post-calibrate failed");
-        LOG_INFO("TX0 calibration done: " + serial_);
-    } else {
-        LOG_WARN("LMS_Calibrate TX0 failed — continuing without TX calibration");
+    if (calibrateTx) {
+        const double calBw = std::max(currentSampleRate_, 2.5e6);
+        LOG_INFO("Calibrating TX0 on " + serial_ + " at " + std::to_string(calBw) + " Hz");
+        if (LMS_Calibrate(handle_, LMS_CH_TX, 0, calBw, 0) == 0) {
+            if (LMS_SetLPFBW(handle_, LMS_CH_TX, 0, currentSampleRate_) != 0)
+                LOG_WARN("LMS_SetLPFBW TX0 post-calibrate failed");
+            LOG_INFO("TX0 calibration done: " + serial_);
+        } else {
+            LOG_WARN("LMS_Calibrate TX0 failed — continuing without TX calibration");
+        }
     }
+
+    // Re-setup both RX channels to restore the WinUSB I/O warmup context (same as init does).
+    for (int ch = 0; ch < 2; ++ch)
+        setupStream({ChannelDescriptor::RX, ch});
+    LOG_INFO("Stream handles rebuilt after calibration: " + serial_);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +365,16 @@ void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
     }
 
     // RX path
+    // При стриминге ВСЕ LimeSuite-вызовы откладываем на worker thread (readBlock),
+    // чтобы не гонять LMS_SetAntenna/LMS_SetLOFrequency из UI-потока параллельно
+    // с LMS_RecvStream — это вызывает краш.
+    if (state_ == DeviceState::Streaming) {
+        currentFrequency_[idx] = hz;
+        pendingFrequency_[idx].store(hz);  // antenna + LO применятся в readBlock
+        return;
+    }
+
+    // Не стримим — применяем напрямую
     const int antenna = antennaForFrequency(hz);
     const int prevAntenna = antennaForFrequency(currentFrequency_[idx]);
     if (antenna != prevAntenna) {
@@ -327,12 +382,6 @@ void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
             throwLime("LMS_SetAntenna failed");
         LOG_INFO("Antenna RX" + std::to_string(idx) + " changed: "
                  + antennaName(antenna) + " for " + std::to_string(hz / 1e6) + " MHz");
-    }
-
-    if (state_ == DeviceState::Streaming) {
-        currentFrequency_[idx] = hz;
-        pendingFrequency_[idx].store(hz);
-        return;
     }
 
     if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, hz) != 0)
@@ -442,6 +491,18 @@ void LimeDevice::teardownAllStreams() {
 }
 
 // ---------------------------------------------------------------------------
+// IDevice: prepareStream — setup без старта, вызывается из UI-потока
+// ---------------------------------------------------------------------------
+void LimeDevice::prepareStream(ChannelDescriptor ch) {
+    if (state_ < DeviceState::Ready) return;
+    // Teardown если уже был setup от прошлого сеанса
+    if (streams_.count(ch)) teardownStream(ch);
+    setupStream(ch);
+    LOG_DEBUG("prepareStream done: ch" + std::to_string(ch.channelIndex)
+              + " on " + serial_);
+}
+
+// ---------------------------------------------------------------------------
 // IDevice: single-channel stream — backward compat delegates to ch0
 // ---------------------------------------------------------------------------
 void LimeDevice::startStream() {
@@ -460,10 +521,12 @@ int LimeDevice::readBlock(int16_t* buffer, int count, int timeoutMs) {
 // IDevice: channel-aware stream
 // ---------------------------------------------------------------------------
 void LimeDevice::startStream(ChannelDescriptor ch) {
-    // Always teardown+setup before each start so USB packet sizing matches
-    // the current sample rate.
-    if (streams_.count(ch)) teardownStream(ch);
-    setupStream(ch);
+    if (!streams_.count(ch)) {
+        // Одиночный канал или prepareStream не вызывался — setup здесь.
+        setupStream(ch);
+    }
+    // Если prepareStream уже вызывался из UI-потока, LMS_SetupStream
+    // был выполнен до запуска любого воркера и не прервёт другой канал.
 
     auto& stream = streams_[ch];
     if (LMS_StartStream(&stream) != 0) {
@@ -486,9 +549,30 @@ void LimeDevice::stopStream(ChannelDescriptor ch) {
 int LimeDevice::readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) {
     const int idx = ch.channelIndex;
 
-    // Apply pending LO change on the worker thread — avoids USB contention.
+    auto it = streams_.find(ch);
+    if (it == streams_.end()) return -1;
+
+    // Apply pending LO change on the worker thread — avoids race with LMS_RecvStream.
+    // We stop the stream, apply antenna + LO, then restart — this flushes the FPGA FIFO
+    // so the subsequent LMS_RecvStream doesn't see stale/corrupt data from before the
+    // LO re-tune. Without the stop/restart, LMS_RecvStream often returns -1 after a
+    // LO change, which terminates the stream unexpectedly.
     const double freq = pendingFrequency_[idx].exchange(kNoFreqPending);
     if (freq != kNoFreqPending) {
+        // Antenna switch (safe to call even if value unchanged)
+        const int ant = antennaForFrequency(freq);
+        if (LMS_SetAntenna(handle_, LMS_CH_RX, idx, ant) != 0)
+            LOG_WARN("LMS_SetAntenna (deferred) failed: RX"
+                     + std::to_string(idx) + " on " + serial_);
+        else
+            LOG_DEBUG("Antenna (deferred) RX" + std::to_string(idx)
+                      + " → " + antennaName(ant));
+
+        // Stop → change LO → restart to flush FIFO.
+        // LMS_StopStream / LMS_StartStream only affect this channel's stream;
+        // the other channel (dual RX) keeps streaming uninterrupted.
+        LMS_StopStream(&it->second);
+
         if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, freq) != 0) {
             LOG_WARN("LMS_SetLOFrequency (deferred) failed: RX"
                      + std::to_string(idx) + " on " + serial_);
@@ -503,10 +587,17 @@ int LimeDevice::readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int 
                 LOG_DEBUG("LO updated: RX" + std::to_string(idx)
                           + " → " + std::to_string(freq / 1e6) + " MHz");
         }
-    }
 
-    auto it = streams_.find(ch);
-    if (it == streams_.end()) return -1;
+        if (LMS_StartStream(&it->second) != 0) {
+            LOG_WARN("LMS_StartStream after LO change failed: RX"
+                     + std::to_string(idx) + " on " + serial_);
+            return -1;
+        }
+
+        // Return 0 (timeout) — skip this block entirely.
+        // Any samples captured before/during the LO change are invalid.
+        return 0;
+    }
 
     lms_stream_meta_t meta{};
     const int n = LMS_RecvStream(&it->second, buffer, count, &meta, timeoutMs);

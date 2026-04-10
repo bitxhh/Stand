@@ -61,6 +61,8 @@ add_executable(Stand
         Application/SessionManager.h
         Application/ClassifierController.cpp
         Application/ClassifierController.h
+        Application/ChannelPanel.cpp
+        Application/ChannelPanel.h
 
         DSP/ClassifierHandler.cpp
         DSP/ClassifierHandler.h

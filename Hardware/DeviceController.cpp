@@ -20,10 +20,10 @@ void DeviceController::initDevice() {
     }
 }
 
-void DeviceController::calibrate(double sampleRateHz) {
+void DeviceController::calibrate(double sampleRateHz, const QList<ChannelDescriptor>& channels) {
     try {
         device_->setSampleRate(sampleRateHz);
-        device_->calibrate();
+        device_->calibrate(channels);
         emit sampleRateChanged(device_->sampleRate());
         emit statusChanged(
             QString("Calibrated at %1 Hz").arg(device_->sampleRate(), 0, 'f', 0));
@@ -47,6 +47,17 @@ void DeviceController::setGain(double dB) {
     try {
         device_->setGain(dB);
         emit statusChanged(QString("Gain: %1 dB").arg(dB, 0, 'f', 1));
+    } catch (const std::exception& ex) {
+        emit errorOccurred(QString::fromStdString(ex.what()));
+    }
+}
+
+void DeviceController::setGainChannel(ChannelDescriptor ch, double dB) {
+    try {
+        device_->setGain(ch, dB);
+        const QString dir = (ch.direction == ChannelDescriptor::TX) ? "TX" : "RX";
+        emit statusChanged(QString("%1%2 Gain: %3 dB")
+                           .arg(dir).arg(ch.channelIndex).arg(dB, 0, 'f', 1));
     } catch (const std::exception& ex) {
         emit errorOccurred(QString::fromStdString(ex.what()));
     }

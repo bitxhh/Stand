@@ -34,7 +34,7 @@ public:
 
     // ── IDevice: жизненный цикл ───────────────────────────────────────────────
     void init()      override;
-    void calibrate() override;
+    void calibrate(const QList<ChannelDescriptor>& channels = {}) override;
 
     // ── IDevice: параметры (глобальные) ──────────────────────────────────────
     void   setSampleRate(double hz)                      override;
@@ -55,8 +55,9 @@ public:
     int  readBlock(int16_t* buffer, int count, int timeoutMs) override;
 
     // ── IDevice: channel-aware стрим ─────────────────────────────────────────
-    void startStream(ChannelDescriptor ch) override;
-    void stopStream(ChannelDescriptor ch)  override;
+    void prepareStream(ChannelDescriptor ch) override;
+    void startStream(ChannelDescriptor ch)   override;
+    void stopStream(ChannelDescriptor ch)    override;
     int  readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) override;
 
     // ── IDevice: channel-aware параметры ─────────────────────────────────────
@@ -72,6 +73,30 @@ public:
 
     // ── IDevice: состояние ────────────────────────────────────────────────────
     [[nodiscard]] DeviceState state() const override { return state_; }
+
+    // ── IDevice: возможности устройства ──────────────────────────────────────
+    [[nodiscard]] QList<ChannelInfo> availableChannels() const override {
+        return {
+            {{ChannelDescriptor::RX, 0}, QStringLiteral("RX0")},
+            {{ChannelDescriptor::RX, 1}, QStringLiteral("RX1")},
+            {{ChannelDescriptor::TX, 0}, QStringLiteral("TX0")},
+        };
+    }
+
+    // ── IDevice: per-channel getters ─────────────────────────────────────────
+    [[nodiscard]] double frequency(ChannelDescriptor ch) const override {
+        return ch.direction == ChannelDescriptor::TX
+            ? currentTxFrequency_[ch.channelIndex]
+            : currentFrequency_[ch.channelIndex];
+    }
+    [[nodiscard]] double gain(ChannelDescriptor ch) const override {
+        return ch.direction == ChannelDescriptor::TX
+            ? currentTxGainDb_[ch.channelIndex]
+            : currentGainDb_[ch.channelIndex];
+    }
+    [[nodiscard]] double maxGain(ChannelDescriptor ch) const override {
+        return ch.direction == ChannelDescriptor::TX ? kMaxTxGainDb : kMaxGainDb;
+    }
 
     // ── IDevice: аппаратно-специфичный виджет ────────────────────────────────
     QWidget* createAdvancedWidget(QWidget* parent) override;

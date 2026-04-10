@@ -20,6 +20,15 @@ enum class DeviceState {
 };
 
 // ---------------------------------------------------------------------------
+// ChannelInfo — describes one available stream endpoint on a device.
+// Returned by IDevice::availableChannels().
+// ---------------------------------------------------------------------------
+struct ChannelInfo {
+    ChannelDescriptor descriptor;
+    QString           displayName;  // "RX0", "RX1", "File", etc.
+};
+
+// ---------------------------------------------------------------------------
 // IDevice — SDR-агностичный интерфейс устройства.
 //
 // Правила реализации:
@@ -43,7 +52,7 @@ public:
 
     // ── Жизненный цикл ───────────────────────────────────────────────────────
     virtual void init()          = 0;   // инициализация железа
-    virtual void calibrate()     {}     // опционально — пустая реализация по умолчанию
+    virtual void calibrate(const QList<ChannelDescriptor>& channels = {}) {}  // опционально
 
     // ── Параметры ─────────────────────────────────────────────────────────────
     virtual void   setSampleRate(double hz)               = 0;
@@ -71,6 +80,13 @@ public:
     // ── Channel-aware стрим (Phase 1+) ───────────────────────────────────────
     // Дефолтные реализации делегируют в однокнальные методы выше ({RX,0}).
     // LimeDevice переопределит их в Phase 1 для поддержки нескольких каналов.
+
+    // prepareStream — вызывается из UI-потока до запуска воркеров при dual RX.
+    // Выполняет только LMS_SetupStream без LMS_StartStream.
+    // Это предотвращает остановку уже работающего канала когда второй поток
+    // вызывает LMS_SetupStream из воркер-потока (LimeSuite прерывает все стримы).
+    virtual void prepareStream(ChannelDescriptor /*ch*/) {}
+
     virtual void startStream(ChannelDescriptor /*ch*/) { startStream(); }
     virtual void stopStream(ChannelDescriptor /*ch*/)  { stopStream(); }
     virtual int  readBlock(ChannelDescriptor /*ch*/, int16_t* buffer, int count, int timeoutMs) {
@@ -78,6 +94,10 @@ public:
     }
     virtual void setFrequency(ChannelDescriptor /*ch*/, double hz) { setFrequency(hz); }
     virtual void setGain(ChannelDescriptor /*ch*/, double dB)      { setGain(dB); }
+
+    [[nodiscard]] virtual double frequency(ChannelDescriptor /*ch*/) const { return frequency(); }
+    [[nodiscard]] virtual double gain(ChannelDescriptor /*ch*/)      const { return gain(); }
+    [[nodiscard]] virtual double maxGain(ChannelDescriptor /*ch*/)   const { return maxGain(); }
 
     // ── Hardware timestamps (Phase 6: sync) ────────────────────────────────
     // Последний аппаратный timestamp из readBlock() для данного канала.
@@ -92,6 +112,13 @@ public:
 
     // ── Состояние ─────────────────────────────────────────────────────────────
     [[nodiscard]] virtual DeviceState state() const = 0;
+
+    // ── Возможности устройства ────────────────────────────────────────────────
+    // Возвращает список доступных каналов устройства.
+    // Дефолт: один RX0 (для backward compat / тестовых заглушек).
+    [[nodiscard]] virtual QList<ChannelInfo> availableChannels() const {
+        return { {{ChannelDescriptor::RX, 0}, QStringLiteral("RX0")} };
+    }
 
     // ── Опциональный UI с аппаратно-специфичными настройками ─────────────────
     // Возвращает виджет (LNA/TIA/PGA для LimeSDR) или nullptr.
