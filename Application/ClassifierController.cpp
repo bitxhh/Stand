@@ -1,12 +1,12 @@
 #include "ClassifierController.h"
 #include "../DSP/ClassifierHandler.h"
-#include "AppController.h"
+#include "RxController.h"
 #include "Logger.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
 
-ClassifierController::ClassifierController(AppController* appCtrl, QObject* parent)
+ClassifierController::ClassifierController(RxController* appCtrl, QObject* parent)
     : QObject(parent)
     , appCtrl_(appCtrl)
 {}

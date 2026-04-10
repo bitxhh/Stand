@@ -12,7 +12,7 @@
 // into a binary frame and emits frameReady() for ClassifierController to send
 // to the Python classifier service.
 //
-// Threading: processBlock() is called on the StreamWorker thread.
+// Threading: processBlock() is called on the RxWorker thread.
 //            frameReady() must be connected via Qt::QueuedConnection so the
 //            ClassifierController can forward data to the QTcpSocket on the
 //            main thread safely.
@@ -39,7 +39,7 @@ public:
     void setIntervalMs(int ms);   // default 100 ms; thread-safe
 
 signals:
-    // Emitted on StreamWorker thread — connect via Qt::QueuedConnection.
+    // Emitted on RxWorker thread — connect via Qt::QueuedConnection.
     void frameReady(QByteArray frame);
 
 private:

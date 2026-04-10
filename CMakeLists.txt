@@ -43,7 +43,7 @@ set(AVX2_FLAGS -mavx2 -mfma)
 # ─── Main executable ──────────────────────────────────────────────────────────
 # Directory layout:
 #   Application/  — UI layer (Qt widgets only, no direct hardware access)
-#   Hardware/     — LimeSDR: Device, LimeManager, StreamWorker, DeviceController
+#   Hardware/     — LimeSDR: Device, LimeManager, RxWorker, TxWorker, DeviceController
 #   DSP/          — Signal processing: FftProcessor, BandpassExporter, FmDemodulator
 #   Audio/        — Audio output: FmAudioOutput (QAudioSink wrapper + resampler)
 #   Core/         — Shared utilities: Logger, LimeException
@@ -53,8 +53,8 @@ add_executable(Stand
 
         Application/Application.cpp
         Application/Application.h
-        Application/AppController.cpp
-        Application/AppController.h
+        Application/RxController.cpp
+        Application/RxController.h
         Application/TxController.cpp
         Application/TxController.h
         Application/SessionManager.cpp
@@ -67,16 +67,12 @@ add_executable(Stand
         DSP/ClassifierHandler.cpp
         DSP/ClassifierHandler.h
 
-        Hardware/Device.cpp
-        Hardware/Device.h
         Hardware/LimeDevice.cpp
         Hardware/LimeDevice.h
         Hardware/LimeDeviceManager.cpp
         Hardware/LimeDeviceManager.h
-        Hardware/LimeManager.cpp
-        Hardware/LimeManager.h
-        Hardware/StreamWorker.cpp
-        Hardware/StreamWorker.h
+        Hardware/RxWorker.cpp
+        Hardware/RxWorker.h
         Hardware/TxWorker.cpp
         Hardware/TxWorker.h
         Hardware/DeviceController.cpp

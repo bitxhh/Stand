@@ -22,7 +22,7 @@
 //
 // Usage:
 //   auto* audio = new FmAudioOutput(this);
-//   connect(worker, &StreamWorker::audioReady,
+//   connect(worker, &RxWorker::audioReady,
 //           audio,  &FmAudioOutput::push, Qt::QueuedConnection);
 //   audio->setVolume(0.8f);
 // ---------------------------------------------------------------------------

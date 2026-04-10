@@ -10,7 +10,7 @@ class IDevice;
 class Pipeline;
 
 // ---------------------------------------------------------------------------
-// StreamWorker — чистый I/Q loop. Живёт в отдельном QThread.
+// RxWorker — чистый I/Q loop. Живёт в отдельном QThread.
 //
 // Единственная обязанность: читать блоки с устройства и передавать
 // их в Pipeline. Вся обработка сигнала — в IPipelineHandler реализациях.
@@ -20,12 +20,12 @@ class Pipeline;
 //                    → loop: IDevice::readBlock() → Pipeline::dispatchBlock()
 //                    → IDevice::stopStream() → finished()
 // ---------------------------------------------------------------------------
-class StreamWorker : public QObject {
+class RxWorker : public QObject {
     Q_OBJECT
 
 public:
-    // channel defaults to {RX, 0} — single-channel callers (AppController) unchanged.
-    StreamWorker(IDevice* device, Pipeline* pipeline,
+    // channel defaults to {RX, 0} — single-channel callers (RxController) unchanged.
+    RxWorker(IDevice* device, Pipeline* pipeline,
                  ChannelDescriptor channel = {},
                  QObject* parent = nullptr);
 

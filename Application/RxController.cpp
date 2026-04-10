@@ -1,34 +1,35 @@
-#include "AppController.h"
+#include "RxController.h"
 #include "../DSP/DemodRegistry.h"
 #include "Logger.h"
 
-AppController::AppController(IDevice* device, ChannelDescriptor channel, QObject* parent)
-    : QObject(parent), device_(device), channel_(channel)
+RxController::RxController(IDevice* device, ChannelDescriptor channel,
+                             QThreadPool* pool, QObject* parent)
+    : QObject(parent), device_(device), channel_(channel), pool_(pool)
 {}
 
-AppController::~AppController() {
+RxController::~RxController() {
     teardownStream();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Stream lifecycle
 // ═══════════════════════════════════════════════════════════════════════════════
-void AppController::startStream(const StreamConfig& cfg) {
+void RxController::startStream(const StreamConfig& cfg) {
     if (streamWorker_) return;
 
-    LOG_INFO("AppController::startStream: lo=" + std::to_string(cfg.loFreqMHz) + " MHz"
+    LOG_INFO("RxController::startStream: lo=" + std::to_string(cfg.loFreqMHz) + " MHz"
              + " record=" + std::to_string(cfg.recordRaw)
              + " wav=" + std::to_string(cfg.exportWav)
              + " mode=" + cfg.demodMode.toStdString());
 
-    pipeline_ = new Pipeline(this);
+    pipeline_ = new Pipeline(pool_, this);
 
     // FFT — always active
     fftHandler_ = new FftHandler(this);
     fftHandler_->setCenterFrequency(cfg.loFreqMHz);
     pipeline_->addHandler(fftHandler_);
     connect(fftHandler_, &FftHandler::fftReady,
-            this, &AppController::fftReady, Qt::QueuedConnection);
+            this, &RxController::fftReady, Qt::QueuedConnection);
 
     // Raw recording
     if (cfg.recordRaw) {
@@ -50,17 +51,17 @@ void AppController::startStream(const StreamConfig& cfg) {
 
     // Worker thread
     streamThread_ = new QThread(this);
-    streamWorker_ = new StreamWorker(device_, pipeline_, channel_);
+    streamWorker_ = new RxWorker(device_, pipeline_, channel_);
     streamWorker_->moveToThread(streamThread_);
 
-    connect(streamThread_, &QThread::started,  streamWorker_, &StreamWorker::run);
-    connect(streamWorker_, &StreamWorker::statusMessage,
-            this, &AppController::streamStatus, Qt::QueuedConnection);
-    connect(streamWorker_, &StreamWorker::errorOccurred,
-            this, &AppController::streamError, Qt::QueuedConnection);
-    connect(streamWorker_, &StreamWorker::finished,
-            this, &AppController::onStreamFinishedInternal, Qt::QueuedConnection);
-    connect(streamWorker_, &StreamWorker::finished,
+    connect(streamThread_, &QThread::started,  streamWorker_, &RxWorker::run);
+    connect(streamWorker_, &RxWorker::statusMessage,
+            this, &RxController::streamStatus, Qt::QueuedConnection);
+    connect(streamWorker_, &RxWorker::errorOccurred,
+            this, &RxController::streamError, Qt::QueuedConnection);
+    connect(streamWorker_, &RxWorker::finished,
+            this, &RxController::onStreamFinishedInternal, Qt::QueuedConnection);
+    connect(streamWorker_, &RxWorker::finished,
             streamThread_, &QThread::quit, Qt::QueuedConnection);
     connect(streamThread_, &QThread::finished, streamWorker_, &QObject::deleteLater);
     connect(streamThread_, &QThread::finished, streamThread_, &QObject::deleteLater);
@@ -68,14 +69,14 @@ void AppController::startStream(const StreamConfig& cfg) {
     streamThread_->start();
 }
 
-void AppController::stopStream() {
+void RxController::stopStream() {
     if (streamWorker_) streamWorker_->stop();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Demodulator
 // ═══════════════════════════════════════════════════════════════════════════════
-void AppController::setDemodMode(const QString& mode, double offsetHz) {
+void RxController::setDemodMode(const QString& mode, double offsetHz) {
     teardownDemod();
     if (mode.isEmpty() || mode == "Off") return;
 
@@ -86,7 +87,7 @@ void AppController::setDemodMode(const QString& mode, double offsetHz) {
     audioOut_ = new FmAudioOutput(this);
     audioOut_->setVolume(volume_);
     connect(audioOut_, &FmAudioOutput::statusChanged,
-            this, &AppController::demodStatus);
+            this, &RxController::demodStatus);
 
     connect(demodHandler_, &BaseDemodHandler::audioReady,
             audioOut_, &FmAudioOutput::push, Qt::QueuedConnection);
@@ -95,7 +96,7 @@ void AppController::setDemodMode(const QString& mode, double offsetHz) {
         pipeline_->addHandler(demodHandler_);
 }
 
-void AppController::teardownDemod() {
+void RxController::teardownDemod() {
     if (pipeline_ && demodHandler_)
         pipeline_->removeHandler(demodHandler_);
     delete demodHandler_;
@@ -103,15 +104,15 @@ void AppController::teardownDemod() {
     if (audioOut_) audioOut_->teardown();
 }
 
-void AppController::setDemodParam(const QString& name, double value) {
+void RxController::setDemodParam(const QString& name, double value) {
     if (demodHandler_) demodHandler_->setParam(name, value);
 }
 
-void AppController::setDemodOffset(double hz) {
+void RxController::setDemodOffset(double hz) {
     if (demodHandler_) demodHandler_->setOffset(hz);
 }
 
-void AppController::setVolume(float vol) {
+void RxController::setVolume(float vol) {
     volume_ = vol;
     if (audioOut_) audioOut_->setVolume(vol);
 }
@@ -119,17 +120,17 @@ void AppController::setVolume(float vol) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // FFT / Metrics
 // ═══════════════════════════════════════════════════════════════════════════════
-void AppController::setFftCenterFreq(double mhz) {
+void RxController::setFftCenterFreq(double mhz) {
     if (fftHandler_) fftHandler_->setCenterFrequency(mhz);
 }
 
-void AppController::addExtraHandler(IPipelineHandler* h) {
+void RxController::addExtraHandler(IPipelineHandler* h) {
     if (!h || !pipeline_) return;
     pipeline_->addHandler(h);
     extraHandlers_.push_back(h);
 }
 
-void AppController::removeExtraHandler(IPipelineHandler* h) {
+void RxController::removeExtraHandler(IPipelineHandler* h) {
     if (!h) return;
     if (pipeline_) pipeline_->removeHandler(h);
     extraHandlers_.erase(
@@ -137,18 +138,18 @@ void AppController::removeExtraHandler(IPipelineHandler* h) {
         extraHandlers_.end());
 }
 
-double AppController::snrDb() const {
+double RxController::snrDb() const {
     return demodHandler_ ? demodHandler_->snrDb() : 0.0;
 }
 
-double AppController::ifRms() const {
+double RxController::ifRms() const {
     return demodHandler_ ? demodHandler_->ifRms() : 0.0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal cleanup
 // ═══════════════════════════════════════════════════════════════════════════════
-void AppController::onStreamFinishedInternal() {
+void RxController::onStreamFinishedInternal() {
     // streamWorker/streamThread are deleted via deleteLater
     streamWorker_ = nullptr;
     streamThread_ = nullptr;
@@ -176,7 +177,7 @@ void AppController::onStreamFinishedInternal() {
     emit streamFinished();
 }
 
-void AppController::teardownStream() {
+void RxController::teardownStream() {
     if (streamWorker_) streamWorker_->stop();
     if (streamThread_) { streamThread_->quit(); streamThread_->wait(3000); }
     streamWorker_ = nullptr;

@@ -16,6 +16,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVector>
@@ -26,7 +27,7 @@
 
 #include "../Core/IDeviceManager.h"
 #include "../Hardware/DeviceController.h"
-#include "AppController.h"
+#include "RxController.h"
 #include "ChannelPanel.h"
 #include "SessionManager.h"
 
@@ -92,6 +93,9 @@ private:
 
     // ── Per-channel panels — one per RX channel from device->availableChannels() ──
     QVector<ChannelPanel*> channelPanels_;
+
+    // ── DSP thread pool — shared across all RX-channel RxControllers ────────
+    QThreadPool* dspPool_{nullptr};
 
     // ── Plot render timer (delegates to each ChannelPanel::replotIfDirty()) ───
     QTimer* plotTimer_{nullptr};

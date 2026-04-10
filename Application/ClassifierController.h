@@ -7,7 +7,7 @@
 #include <QTimer>
 #include <QByteArray>
 
-class AppController;
+class RxController;
 class ClassifierHandler;
 
 // ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ class ClassifierHandler;
 // Lifecycle:
 //   start() → QProcess launches Python script → connectToService() tries to
 //   connect (retries until success or process exits) → socket connected →
-//   ClassifierHandler added to AppController's pipeline.
+//   ClassifierHandler added to RxController's pipeline.
 //
 //   stop() / process crash → ClassifierHandler removed from pipeline →
 //   classifierStopped() emitted → UI shows "Unavailable".
@@ -30,7 +30,7 @@ class ClassifierController : public QObject {
     Q_OBJECT
 
 public:
-    explicit ClassifierController(AppController* appCtrl, QObject* parent = nullptr);
+    explicit ClassifierController(RxController* appCtrl, QObject* parent = nullptr);
     ~ClassifierController() override;
 
     void start(const QString& pythonExe, const QString& scriptPath);
@@ -60,7 +60,7 @@ private:
     void detachHandler();
     void teardown();
 
-    AppController*     appCtrl_;
+    RxController*     appCtrl_;
     ClassifierHandler* handler_{nullptr};
     QProcess*          process_{nullptr};
     QTcpSocket*        socket_{nullptr};

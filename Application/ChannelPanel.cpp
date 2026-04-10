@@ -55,7 +55,7 @@ ChannelPanel::~ChannelPanel() {
 }
 
 // ---------------------------------------------------------------------------
-void ChannelPanel::setAppController(AppController* ctrl) {
+void ChannelPanel::setRxController(RxController* ctrl) {
     if (ctrl_ == ctrl) return;
 
     if (ctrl_)
@@ -67,8 +67,8 @@ void ChannelPanel::setAppController(AppController* ctrl) {
     ctrl_ = ctrl;
     if (!ctrl_) return;
 
-    connect(ctrl_, &AppController::fftReady,    this, &ChannelPanel::onFftReady);
-    connect(ctrl_, &AppController::demodStatus, this,
+    connect(ctrl_, &RxController::fftReady,    this, &ChannelPanel::onFftReady);
+    connect(ctrl_, &RxController::demodStatus, this,
             [this](const QString& msg, bool isError) {
                 if (!demodStatusLabel_) return;
                 demodStatusLabel_->setStyleSheet(
@@ -644,8 +644,8 @@ void ChannelPanel::applyDemodParams() {
 }
 
 // ---------------------------------------------------------------------------
-AppController::StreamConfig ChannelPanel::buildStreamConfig() const {
-    AppController::StreamConfig cfg;
+RxController::StreamConfig ChannelPanel::buildStreamConfig() const {
+    RxController::StreamConfig cfg;
     cfg.loFreqMHz = freqSpinBox_ ? freqSpinBox_->value() : cfg_.freqDefaultMHz;
     cfg.recordRaw = recordCheckBox_ && recordCheckBox_->isChecked();
     cfg.rawPath   = rawPath_;

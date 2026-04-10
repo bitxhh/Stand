@@ -6,7 +6,7 @@
 // direction    — RX (receive) or TX (transmit)
 // channelIndex — hardware channel index (0 or 1 for LimeSDR)
 //
-// Used by IDevice channel-aware methods, StreamWorker, and BlockMeta.
+// Used by IDevice channel-aware methods, RxWorker, and BlockMeta.
 // ---------------------------------------------------------------------------
 struct ChannelDescriptor {
     enum Direction { RX, TX };

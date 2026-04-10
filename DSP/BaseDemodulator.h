@@ -32,7 +32,7 @@ inline constexpr int kDefaultFir2Taps = 255;
 //   AM: envelope + DC removal
 //   SSB/NFM/CW: future
 //
-// Thread safety: call all methods from the SAME thread (StreamWorker thread).
+// Thread safety: call all methods from the SAME thread (RxWorker thread).
 // ---------------------------------------------------------------------------
 class BaseDemodulator {
 public:

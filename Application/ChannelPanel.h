@@ -4,7 +4,7 @@
 #include <QString>
 #include "../Core/ChannelDescriptor.h"
 #include "../DSP/FftProcessor.h"
-#include "AppController.h"
+#include "RxController.h"
 
 class QCustomPlot;
 class QCPItemLine;
@@ -25,11 +25,11 @@ class ClassifierController;
 // Owns: FFT plot, frequency spin/slider, gain slider, demod controls (FM/AM),
 // VFO spin, level indicator, recording checkboxes, classifier toggle.
 //
-// Call setAppController() to wire it to an AppController (and recreate
+// Call setRxController() to wire it to an RxController (and recreate
 // the embedded ClassifierController). Must be called before startStream.
 //
 // replotIfDirty() — called from DDW's plotTimer, 20fps max.
-// buildStreamConfig() — assembles StreamConfig for AppController::startStream().
+// buildStreamConfig() — assembles StreamConfig for RxController::startStream().
 // updateMetrics()    — called from DDW's metricsTimer (every 500ms).
 // ---------------------------------------------------------------------------
 class ChannelPanel : public QWidget {
@@ -50,11 +50,11 @@ public:
                  QWidget*          parent = nullptr);
     ~ChannelPanel() override;
 
-    // Wire to an AppController (creates ClassifierController internally).
+    // Wire to an RxController (creates ClassifierController internally).
     // Safe to call multiple times; disconnects previous controller first.
-    void setAppController(AppController* ctrl);
+    void setRxController(RxController* ctrl);
 
-    [[nodiscard]] AppController*    appController() const { return ctrl_; }
+    [[nodiscard]] RxController*    appController() const { return ctrl_; }
     [[nodiscard]] ChannelDescriptor channel()       const { return cfg_.channel; }
 
     // Called by DDW plotTimer (50ms) — replots only if new FFT data arrived.
@@ -68,7 +68,7 @@ public:
     void onStreamStopped();
 
     // Assemble StreamConfig from current widget state.
-    [[nodiscard]] AppController::StreamConfig buildStreamConfig() const;
+    [[nodiscard]] RxController::StreamConfig buildStreamConfig() const;
 
     // Recording path accessors — for openRecordSettings dialog.
     [[nodiscard]] QString rawPath()   const { return rawPath_; }
@@ -100,7 +100,7 @@ private:
     Config            cfg_;
     IDevice*          device_;
     DeviceController* controller_;
-    AppController*    ctrl_{nullptr};
+    RxController*    ctrl_{nullptr};
     ClassifierController* classifierCtrl_{nullptr};
 
     // ── FFT plot ──────────────────────────────────────────────────────────────

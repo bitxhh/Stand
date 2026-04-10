@@ -1,8 +1,10 @@
 #include "Pipeline.h"
 
+#include <QtConcurrent/QtConcurrent>
 #include <algorithm>
 
-Pipeline::Pipeline(QObject* parent) : QObject(parent) {}
+Pipeline::Pipeline(QThreadPool* pool, QObject* parent)
+    : QObject(parent), pool_(pool) {}
 
 void Pipeline::addHandler(IPipelineHandler* handler) {
     std::unique_lock lock(mutex_);
@@ -25,15 +27,33 @@ void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz) 
     // add/remove/clear до завершения — так delete handler'а в teardown
     // не произойдёт, пока processBlock ещё работает.
     std::shared_lock lock(mutex_);
+    if (!pool_ || handlers_.size() <= 1) {
+        for (auto* h : handlers_)
+            h->processBlock(iq, count, sampleRateHz);
+        return;
+    }
+    QList<QFuture<void>> futures;
+    futures.reserve(static_cast<qsizetype>(handlers_.size()));
     for (auto* h : handlers_)
-        h->processBlock(iq, count, sampleRateHz);
+        futures << QtConcurrent::run(pool_, [=] { h->processBlock(iq, count, sampleRateHz); });
+    for (auto& f : futures)
+        f.waitForFinished();
 }
 
 void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz,
                               const BlockMeta& meta) {
     std::shared_lock lock(mutex_);
+    if (!pool_ || handlers_.size() <= 1) {
+        for (auto* h : handlers_)
+            h->processBlock(iq, count, sampleRateHz, meta);
+        return;
+    }
+    QList<QFuture<void>> futures;
+    futures.reserve(static_cast<qsizetype>(handlers_.size()));
     for (auto* h : handlers_)
-        h->processBlock(iq, count, sampleRateHz, meta);
+        futures << QtConcurrent::run(pool_, [=] { h->processBlock(iq, count, sampleRateHz, meta); });
+    for (auto& f : futures)
+        f.waitForFinished();
 }
 
 void Pipeline::notifyStarted(double sampleRateHz) {

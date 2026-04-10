@@ -8,10 +8,10 @@
 #include <chrono>
 
 // ---------------------------------------------------------------------------
-// FftHandler — throttled FFT, вызывается из StreamWorker thread.
+// FftHandler — throttled FFT, вызывается из RxWorker thread.
 //
 // setCenterFrequency() — потокобезопасно, можно звать из UI thread.
-// fftReady() — эмитируется из StreamWorker thread; подключать через
+// fftReady() — эмитируется из RxWorker thread; подключать через
 //              Qt::QueuedConnection к UI-слотам.
 // ---------------------------------------------------------------------------
 class FftHandler : public QObject, public IPipelineHandler {

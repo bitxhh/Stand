@@ -27,6 +27,11 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     connect(controller_, &DeviceController::errorOccurred,
             this,        &DeviceDetailWindow::onControllerError);
 
+    // ── DSP thread pool — one per DeviceDetailWindow, shared across all RX pipelines.
+    // maxThreadCount left at default (QThread::idealThreadCount()) so the pool
+    // scales automatically to the machine's core count.
+    dspPool_ = new QThreadPool(this);
+
     // ── Create one ChannelPanel per RX channel reported by the device ────────
     for (const auto& chInfo : this->device->availableChannels()) {
         if (chInfo.descriptor.direction != ChannelDescriptor::RX)
@@ -38,11 +43,11 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
         cfg.freqMaxMHz     = kFreqMaxMHz;
         cfg.freqDefaultMHz = kFreqDefaultMHz;
         auto* panel = new ChannelPanel(cfg, this->device.get(), controller_, this);
-        auto* ctrl  = new AppController(this->device.get(), chInfo.descriptor, this);
-        panel->setAppController(ctrl);
-        connect(ctrl, &AppController::streamError,
+        auto* ctrl  = new RxController(this->device.get(), chInfo.descriptor, dspPool_, this);
+        panel->setRxController(ctrl);
+        connect(ctrl, &RxController::streamError,
                 this, &DeviceDetailWindow::onStreamError,    Qt::QueuedConnection);
-        connect(ctrl, &AppController::streamFinished,
+        connect(ctrl, &RxController::streamFinished,
                 this, &DeviceDetailWindow::onStreamFinished, Qt::QueuedConnection);
         channelPanels_.append(panel);
     }
@@ -150,7 +155,7 @@ DeviceDetailWindow::~DeviceDetailWindow() {
     // members, it would access freed memory via the this pointer.
     connectionTimer->stop();
     connectionWatcher.waitForFinished();   // blocks until any pending scan completes
-    // AppController destructors handle stream teardown (they are children of this)
+    // RxController destructors handle stream teardown (they are children of this)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -530,7 +535,7 @@ void DeviceDetailWindow::startStream() {
 
     // Forward first channel's stream status to the status label
     if (!channelPanels_.isEmpty())
-        connect(channelPanels_.first()->appController(), &AppController::streamStatus,
+        connect(channelPanels_.first()->appController(), &RxController::streamStatus,
                 streamStatusLabel, &QLabel::setText, Qt::QueuedConnection);
 
     // LMS_GetDeviceList (called by watchdog) causes USB interference during streaming.
@@ -566,7 +571,7 @@ void DeviceDetailWindow::onStreamError(const QString& error) {
 }
 
 void DeviceDetailWindow::onStreamFinished() {
-    // Called from each channel's AppController via QueuedConnection.
+    // Called from each channel's RxController via QueuedConnection.
     // Allow restart only when ALL channels have finished.
     if (std::ranges::any_of(channelPanels_,
             [](auto* p) { return p->appController()->isStreaming(); })) return;
@@ -576,7 +581,7 @@ void DeviceDetailWindow::onStreamFinished() {
     // Disconnect streamStatus so stale connection doesn't persist across streams
     if (!channelPanels_.isEmpty())
         disconnect(channelPanels_.first()->appController(),
-                   &AppController::streamStatus, streamStatusLabel, nullptr);
+                   &RxController::streamStatus, streamStatusLabel, nullptr);
 
     for (auto* p : channelPanels_) p->onStreamStopped();
 

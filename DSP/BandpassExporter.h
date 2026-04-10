@@ -27,11 +27,11 @@
 // Usage:
 //   BandpassExporter exp(inputSR, stationOffsetHz, bwHz);
 //   exp.open("station.wav");
-//   // inside StreamWorker loop:
+//   // inside RxWorker loop:
 //   exp.pushBlock(rawBlock);
 //   exp.close();   // flushes WAV header with final sample count
 //
-// Thread safety: call all methods from the SAME thread (StreamWorker thread).
+// Thread safety: call all methods from the SAME thread (RxWorker thread).
 // ---------------------------------------------------------------------------
 class BandpassExporter {
 public:

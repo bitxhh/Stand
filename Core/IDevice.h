@@ -36,7 +36,7 @@ struct ChannelInfo {
 //     могут бросить std::exception — caller обязан ловить.
 //   • readBlock() блокирует вызывающий поток до прихода данных или таймаута.
 //     Возвращает количество принятых I/Q пар (0 = таймаут, < 0 = ошибка).
-//   • startStream() / stopStream() вызываются из потока StreamWorker.
+//   • startStream() / stopStream() вызываются из потока RxWorker.
 //   • createAdvancedWidget() опционален — возвращает nullptr по умолчанию.
 // ---------------------------------------------------------------------------
 class IDevice : public QObject {
@@ -68,7 +68,7 @@ public:
     [[nodiscard]] virtual double maxGain()          const = 0;
 
     // ── Стрим ────────────────────────────────────────────────────────────────
-    // Вызываются из потока StreamWorker (не из UI-потока).
+    // Вызываются из потока RxWorker (не из UI-потока).
     virtual void startStream() = 0;
     virtual void stopStream()  = 0;
 

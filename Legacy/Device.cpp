@@ -1,4 +1,4 @@
-#include "Device.h"
+#include "../Legacy/Device.h"
 #include "LimeException.h"
 #include "Logger.h"
 

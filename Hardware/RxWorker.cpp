@@ -1,10 +1,10 @@
-#include "StreamWorker.h"
+#include "RxWorker.h"
 #include "IDevice.h"
 #include "Pipeline.h"
 #include "IPipelineHandler.h"
 #include "Logger.h"
 
-StreamWorker::StreamWorker(IDevice* device, Pipeline* pipeline,
+RxWorker::RxWorker(IDevice* device, Pipeline* pipeline,
                            ChannelDescriptor channel, QObject* parent)
     : QObject(parent)
     , device_(device)
@@ -14,13 +14,13 @@ StreamWorker::StreamWorker(IDevice* device, Pipeline* pipeline,
     buffer_.resize(kBlockSize * 2);   // interleaved I/Q: count * 2 int16
 }
 
-void StreamWorker::stop() {
+void RxWorker::stop() {
     running_.store(false);
 }
 
-void StreamWorker::run() {
+void RxWorker::run() {
     const QString devId = device_->id();
-    LOG_INFO("StreamWorker started: " + devId.toStdString());
+    LOG_INFO("RxWorker started: " + devId.toStdString());
     emit statusMessage(QString("Streaming: %1").arg(devId));
 
     // Старт стрима
@@ -72,7 +72,7 @@ void StreamWorker::run() {
     pipeline_->notifyStopped();
     device_->stopStream(channel_);
 
-    LOG_INFO("StreamWorker finished: " + devId.toStdString());
+    LOG_INFO("RxWorker finished: " + devId.toStdString());
     emit statusMessage(QString("Stream stopped: %1").arg(devId));
     emit finished();
 }

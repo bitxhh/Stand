@@ -7,21 +7,22 @@
 #include "../DSP/RawFileHandler.h"
 #include "../DSP/BandpassHandler.h"
 #include "../Audio/FmAudioOutput.h"
-#include "../Hardware/StreamWorker.h"
+#include "../Hardware/RxWorker.h"
 
 #include <QObject>
 #include <QThread>
+#include <QThreadPool>
 #include <vector>
 
 class IDevice;
 
 // ---------------------------------------------------------------------------
-// AppController — owns Pipeline, StreamWorker, handlers, audio output.
+// RxController — owns Pipeline, RxWorker, handlers, audio output.
 //
 // No widgets. All cross-thread wiring (QueuedConnections) is set up here.
 // DeviceDetailWindow only calls public methods and connects to signals.
 // ---------------------------------------------------------------------------
-class AppController : public QObject {
+class RxController : public QObject {
     Q_OBJECT
 
 public:
@@ -38,10 +39,12 @@ public:
     };
 
     // channel defaults to {RX, 0} — backward-compatible with existing callers.
-    explicit AppController(IDevice* device,
+    // pool == nullptr → синхронный pipeline (TX, одиночные handlers).
+    explicit RxController(IDevice* device,
                            ChannelDescriptor channel = {},
+                           QThreadPool* pool = nullptr,
                            QObject* parent = nullptr);
-    ~AppController() override;
+    ~RxController() override;
 
     // ── Stream lifecycle ─────────────────────────────────────────────────────
     void startStream(const StreamConfig& cfg);
@@ -81,9 +84,10 @@ private:
 
     IDevice*          device_;
     ChannelDescriptor channel_{};
+    QThreadPool*      pool_{nullptr};
     Pipeline*         pipeline_{nullptr};
     QThread*          streamThread_{nullptr};
-    StreamWorker*     streamWorker_{nullptr};
+    RxWorker*     streamWorker_{nullptr};
     FftHandler*       fftHandler_{nullptr};
     BaseDemodHandler* demodHandler_{nullptr};
     FmAudioOutput*    audioOut_{nullptr};
