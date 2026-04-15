@@ -5,13 +5,13 @@
 #include <QString>
 #include <fstream>
 
-// Пишет сырые I/Q int16 сэмплы в бинарный файл.
+// Пишет сырые I/Q float32 сэмплы в бинарный файл (.cf32 формат).
 class RawFileHandler : public IPipelineHandler {
 public:
     explicit RawFileHandler(const QString& path);
     ~RawFileHandler() override;
 
-    void processBlock(const int16_t* iq, int count, double sampleRateHz) override;
+    void processBlock(const float* iq, int count, double sampleRateHz) override;
     void onStreamStarted(double sampleRateHz) override;
     void onStreamStopped() override;
 

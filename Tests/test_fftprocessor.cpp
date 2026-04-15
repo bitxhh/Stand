@@ -14,14 +14,14 @@ static constexpr double kPi = 3.14159265358979323846;
 
 // Build an interleaved I/Q buffer for a complex tone at freqHz.
 // Signal = exp(j*2π*freqHz*n/sr)  →  I=cos(...), Q=sin(...)
-static QVector<int16_t> makeComplexTone(int n, double sr, double freqHz,
-                                        double amplitude = 0.9)
+static QVector<float> makeComplexTone(int n, double sr, double freqHz,
+                                      double amplitude = 0.9)
 {
-    QVector<int16_t> iq(n * 2);
+    QVector<float> iq(n * 2);
     for (int i = 0; i < n; ++i) {
         const double phase = 2.0 * kPi * freqHz * i / sr;
-        iq[2 * i]     = static_cast<int16_t>(std::cos(phase) * amplitude * 32767.0);
-        iq[2 * i + 1] = static_cast<int16_t>(std::sin(phase) * amplitude * 32767.0);
+        iq[2 * i]     = static_cast<float>(std::cos(phase) * amplitude);
+        iq[2 * i + 1] = static_cast<float>(std::sin(phase) * amplitude);
     }
     return iq;
 }
@@ -42,13 +42,13 @@ TEST_CASE("FftProcessor: DC tone peaks at centre bin", "[fft]") {
     constexpr double kSR  = 4'000'000.0;
     constexpr double kCtr = 102.0;
 
-    QVector<int16_t> iq(kN * 2);
+    QVector<float> iq(kN * 2, 0.0f);
     for (int i = 0; i < kN; ++i) {
-        iq[2 * i]     = 29000;   // I ≈ 0.885 full scale
-        iq[2 * i + 1] = 0;       // Q = 0
+        iq[2 * i]     = 0.885f;   // I ≈ 0.885 full scale
+        iq[2 * i + 1] = 0.0f;    // Q = 0
     }
 
-    const FftFrame frame = FftProcessor::process(iq, kCtr, kSR);
+    const FftFrame frame = FftProcessor::process(iq.constData(), iq.size() / 2, kCtr, kSR);
 
     REQUIRE(frame.powerDb.size() == kN);
     REQUIRE(frame.freqMHz.size() == kN);
@@ -73,7 +73,7 @@ TEST_CASE("FftProcessor: tone at +500 kHz offset peaks at correct bin", "[fft]")
     constexpr double kOffset = 500'000.0;   // +500 kHz from centre
 
     const auto iq = makeComplexTone(kN, kSR, kOffset);
-    const FftFrame frame = FftProcessor::process(iq, kCtr, kSR);
+    const FftFrame frame = FftProcessor::process(iq.constData(), iq.size() / 2, kCtr, kSR);
 
     const int peak = peakBin(frame);
 
@@ -98,8 +98,8 @@ TEST_CASE("FftProcessor: frequency axis spans SR/2 around centre", "[fft]") {
     constexpr double kSR  = 4'000'000.0;
     constexpr double kCtr = 100.0;
 
-    QVector<int16_t> iq(kN * 2, 0);
-    const FftFrame frame = FftProcessor::process(iq, kCtr, kSR);
+    QVector<float> iq(kN * 2, 0.0f);
+    const FftFrame frame = FftProcessor::process(iq.constData(), iq.size() / 2, kCtr, kSR);
 
     const double expectedFirst = kCtr - (kSR / 2.0) / 1e6;   // 98.0 MHz
     const double expectedLast  = kCtr + (kSR / 2.0) / 1e6    // ~102.0 MHz
@@ -121,7 +121,7 @@ TEST_CASE("FftProcessor: signal bin is at least 20 dB above noise floor", "[fft]
     constexpr double kOffset = 300'000.0;
 
     const auto iq = makeComplexTone(kN, kSR, kOffset, 0.9);
-    const FftFrame frame = FftProcessor::process(iq, kCtr, kSR);
+    const FftFrame frame = FftProcessor::process(iq.constData(), iq.size() / 2, kCtr, kSR);
 
     const int peak = peakBin(frame);
     const double peakDb = frame.powerDb[peak];

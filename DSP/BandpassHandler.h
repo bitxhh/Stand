@@ -14,9 +14,10 @@ public:
                     double bandwidthHz     = 100'000.0,
                     double outputSrHz      = 250'000.0);
 
-    void processBlock(const int16_t* iq, int count, double sampleRateHz) override;
+    void processBlock(const float* iq, int count, double sampleRateHz) override;
     void onStreamStarted(double sampleRateHz) override;
     void onStreamStopped() override;
+    void onRetune(double newFreqHz) override;
 
 private:
     QString path_;

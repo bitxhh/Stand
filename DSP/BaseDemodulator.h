@@ -5,7 +5,6 @@
 #include <QVector>
 #include <complex>
 #include <vector>
-#include <cstdint>
 
 // ---------------------------------------------------------------------------
 // Default FIR tap counts — shared by FM and AM subclasses.
@@ -21,7 +20,7 @@ inline constexpr int kDefaultFir2Taps = 255;
 // ---------------------------------------------------------------------------
 // BaseDemodulator — common DSP pipeline for all demodulators.
 //
-//   int16 I/Q  →  DC blocker  →  NCO shift  →  FIR1 LPF (complex)
+//   float32 I/Q  →  DC blocker  →  NCO shift  →  FIR1 LPF (complex)
 //              →  decimate D1  →  IF @ ~500 kHz
 //              →  [virtual demodulateIF]
 //              →  FIR2 LPF (real)
@@ -38,7 +37,7 @@ class BaseDemodulator {
 public:
     virtual ~BaseDemodulator() = default;
 
-    [[nodiscard]] QVector<float> pushBlock(const QVector<int16_t>& iqBlock);
+    [[nodiscard]] QVector<float> pushBlock(const float* iq, int count);
     void setOffset(double offsetHz);
 
     [[nodiscard]] double audioSampleRate() const { return audioSR_; }

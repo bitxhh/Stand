@@ -11,22 +11,22 @@
 
 static constexpr double kPi = 3.14159265358979323846;
 
-// Generate a pure AM-modulated carrier at carrierHz (int16, interleaved I/Q).
+// Generate a pure AM-modulated carrier at carrierHz (float32, interleaved I/Q).
 // envelope(t) = 1 + m * sin(2*pi*modFreqHz*t), carrier at carrierHz.
 // carrierHz is a baseband frequency (relative to LO), NOT at DC —
 // the DC blocker would kill a carrier at 0 Hz.
-static QVector<int16_t> makeAmSignal(double sr, int numSamples,
-                                     double modFreqHz,
-                                     double carrierHz  = 50'000.0,
-                                     double depth      = 0.8,
-                                     double amplitude  = 0.5)
+static QVector<float> makeAmSignal(double sr, int numSamples,
+                                   double modFreqHz,
+                                   double carrierHz  = 50'000.0,
+                                   double depth      = 0.8,
+                                   double amplitude  = 0.5)
 {
-    QVector<int16_t> iq(numSamples * 2);
+    QVector<float> iq(numSamples * 2);
     for (int n = 0; n < numSamples; ++n) {
         const double env = 1.0 + depth * std::sin(2.0 * kPi * modFreqHz * n / sr);
         const double phase = 2.0 * kPi * carrierHz * n / sr;
-        iq[2 * n]     = static_cast<int16_t>(env * amplitude * std::cos(phase) * 32767.0);
-        iq[2 * n + 1] = static_cast<int16_t>(env * amplitude * std::sin(phase) * 32767.0);
+        iq[2 * n]     = static_cast<float>(env * amplitude * std::cos(phase));
+        iq[2 * n + 1] = static_cast<float>(env * amplitude * std::sin(phase));
     }
     return iq;
 }
@@ -45,16 +45,14 @@ static double dftAmplitude(const QVector<float>& signal, double fs, double freq)
 
 // Run demodulator over multiple blocks.
 static QVector<float> runDemod(AmDemodulator& dem,
-                               const QVector<int16_t>& iq,
+                               const QVector<float>& iq,
                                int blockSize = 16384)
 {
     QVector<float> out;
     const int total = iq.size() / 2;
     for (int offset = 0; offset < total; offset += blockSize) {
         const int count = std::min(blockSize, total - offset);
-        const QVector<int16_t> block(iq.constData() + offset * 2,
-                                     iq.constData() + (offset + count) * 2);
-        const auto chunk = dem.pushBlock(block);
+        const auto chunk = dem.pushBlock(iq.constData() + offset * 2, count);
         out.append(chunk);
     }
     return out;

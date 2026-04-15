@@ -33,6 +33,9 @@ public:
 
     void startTx(const TxConfig& cfg);
     void stopTx();
+    // Synchronous teardown — blocks until TX worker exits.
+    // Call before IDevice::close() to ensure hardware stream is stopped.
+    void shutdown() { teardownTx(); }
     [[nodiscard]] bool isTransmitting() const { return txWorker_ != nullptr; }
 
 signals:

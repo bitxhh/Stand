@@ -35,10 +35,13 @@ public:
     void clearHandlers();
 
     // Вызывается из RxWorker thread
-    void dispatchBlock(const int16_t* iq, int count, double sampleRateHz);
-    void dispatchBlock(const int16_t* iq, int count, double sampleRateHz, const BlockMeta& meta);
+    void dispatchBlock(const float* iq, int count, double sampleRateHz);
+    void dispatchBlock(const float* iq, int count, double sampleRateHz, const BlockMeta& meta);
     void notifyStarted(double sampleRateHz);
     void notifyStopped();
+    // Fan-out for IDevice::retuned — called synchronously from the UI thread
+    // while the RX worker is parked, so handler state mutation is race-free.
+    void notifyRetune(double newFreqHz);
 
 private:
     QThreadPool*                   pool_{nullptr};

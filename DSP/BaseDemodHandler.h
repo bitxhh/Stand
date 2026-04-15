@@ -46,7 +46,7 @@ public:
     [[nodiscard]] double ifRms() const { return dem_ ? dem_->ifRms() : 0.0; }
 
     // IPipelineHandler
-    void processBlock(const int16_t* iq, int count, double sampleRateHz) override;
+    void processBlock(const float* iq, int count, double sampleRateHz) override;
     void onStreamStarted(double sampleRateHz) override;
     void onStreamStopped() override;
 

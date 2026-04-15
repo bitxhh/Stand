@@ -2,6 +2,7 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QCloseEvent>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -41,6 +42,9 @@ public:
 
 signals:
     void deviceDisconnected();
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     // ── Connection watchdog ───────────────────────────────────────────────────

@@ -15,13 +15,13 @@
 
 static constexpr double kPi = 3.14159265358979323846;
 
-// Generate a pure FM-modulated baseband I/Q signal (int16, interleaved).
+// Generate a pure FM-modulated baseband I/Q signal (float32, interleaved).
 // Carrier at 0 Hz, modulated by a sine at freqHz with deviation devHz.
-static QVector<int16_t> makeFmSignal(double sr, int numSamples,
-                                     double freqHz, double devHz,
-                                     double amplitude = 0.9)
+static QVector<float> makeFmSignal(double sr, int numSamples,
+                                   double freqHz, double devHz,
+                                   double amplitude = 0.9)
 {
-    QVector<int16_t> iq(numSamples * 2);
+    QVector<float> iq(numSamples * 2);
     double phase = 0.0;
     for (int n = 0; n < numSamples; ++n) {
         // Instantaneous phase increment = 2π * f_inst / sr
@@ -29,8 +29,8 @@ static QVector<int16_t> makeFmSignal(double sr, int numSamples,
         phase += (2.0 * kPi * devHz * std::sin(2.0 * kPi * freqHz * n / sr)) / sr;
         while (phase >  kPi) phase -= 2.0 * kPi;
         while (phase < -kPi) phase += 2.0 * kPi;
-        iq[2 * n]     = static_cast<int16_t>(std::cos(phase) * amplitude * 32767.0);
-        iq[2 * n + 1] = static_cast<int16_t>(std::sin(phase) * amplitude * 32767.0);
+        iq[2 * n]     = static_cast<float>(std::cos(phase) * amplitude);
+        iq[2 * n + 1] = static_cast<float>(std::sin(phase) * amplitude);
     }
     return iq;
 }
@@ -51,16 +51,14 @@ static double dftAmplitude(const QVector<float>& signal, double fs, double freq)
 
 // Accumulate multiple blocks into one audio vector.
 static QVector<float> runDemod(FmDemodulator& dem,
-                               const QVector<int16_t>& iq,
+                               const QVector<float>& iq,
                                int blockSize = 16384)
 {
     QVector<float> out;
     const int total = iq.size() / 2;   // number of I/Q pairs
     for (int offset = 0; offset < total; offset += blockSize) {
         const int count = std::min(blockSize, total - offset);
-        const QVector<int16_t> block(iq.constData() + offset * 2,
-                                     iq.constData() + (offset + count) * 2);
-        const auto chunk = dem.pushBlock(block);
+        const auto chunk = dem.pushBlock(iq.constData() + offset * 2, count);
         out.append(chunk);
     }
     return out;
@@ -113,14 +111,14 @@ TEST_CASE("DC blocker removes constant I/Q offset", "[dcblock]") {
 
     constexpr int kBlockSize = 16384;
     // DC at nearly full scale
-    QVector<int16_t> dcBlock(kBlockSize * 2, 0);
+    QVector<float> dcBlock(kBlockSize * 2, 0.0f);
     for (int i = 0; i < kBlockSize; ++i) {
-        dcBlock[2 * i]     = 26000;   // I ≈ 0.79
-        dcBlock[2 * i + 1] = 0;
+        dcBlock[2 * i]     = 0.79f;   // I ≈ 0.79
+        dcBlock[2 * i + 1] = 0.0f;
     }
 
     // Run 3 blocks — DC blocker needs a few samples to settle
-    for (int b = 0; b < 3; ++b) std::ignore = dem.pushBlock(dcBlock);
+    for (int b = 0; b < 3; ++b) std::ignore = dem.pushBlock(dcBlock.constData(), kBlockSize);
 
     // After settling, IF RMS should be very small (DC is blocked)
     const double ifRms = dem.ifRms();
@@ -252,17 +250,14 @@ TEST_CASE("FM quieting: noise-only input has low SNR", "[fm][snr]") {
     FmDemodulator dem(kSR, 0.0, 75e-6, 100'000.0);
 
     // Feed random noise — no FM signal
-    QVector<int16_t> noise(kBlocks * 16384 * 2);
+    QVector<float> noise(kBlocks * 16384 * 2);
     std::srand(42);
     for (auto& s : noise)
-        s = static_cast<int16_t>((std::rand() % 65536) - 32768);
+        s = static_cast<float>((std::rand() / (RAND_MAX + 1.0) - 0.5) * 2.0);
 
-    const QVector<int16_t> block(noise);
     for (int offset = 0; offset < noise.size() / 2; offset += 16384) {
         const int count = std::min(16384, static_cast<int>(noise.size() / 2 - offset));
-        const QVector<int16_t> b(noise.constData() + offset * 2,
-                                 noise.constData() + (offset + count) * 2);
-        std::ignore = dem.pushBlock(b);
+        std::ignore = dem.pushBlock(noise.constData() + offset * 2, count);
     }
 
     const double snr = dem.snrDb();

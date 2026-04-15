@@ -47,5 +47,6 @@ private:
 
     // 16384 = 2^14: FFTW fast radix-2, помещается в USB transfer limit при любом SR.
     static constexpr int kBlockSize = 16384;
-    std::vector<int16_t> buffer_;
+    std::vector<int16_t> buffer_;    // raw int16 from LimeSuite (hardware boundary)
+    std::vector<float>   floatBuf_;  // normalized float32 dispatched to Pipeline
 };

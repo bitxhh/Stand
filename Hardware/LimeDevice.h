@@ -3,9 +3,9 @@
 #include "../Core/IDevice.h"
 #include "lime/LimeSuite.h"
 
-#include <atomic>
-#include <limits>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -35,6 +35,7 @@ public:
     // ── IDevice: жизненный цикл ───────────────────────────────────────────────
     void init()      override;
     void calibrate(const QList<ChannelDescriptor>& channels = {}) override;
+    void close()     override;
 
     // ── IDevice: параметры (глобальные) ──────────────────────────────────────
     void   setSampleRate(double hz)                      override;
@@ -59,6 +60,7 @@ public:
     void startStream(ChannelDescriptor ch)   override;
     void stopStream(ChannelDescriptor ch)    override;
     int  readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) override;
+    void checkPauseForRetune(ChannelDescriptor ch) override;
 
     // ── IDevice: channel-aware параметры ─────────────────────────────────────
     void setFrequency(ChannelDescriptor ch, double hz) override;
@@ -111,6 +113,10 @@ private:
     void teardownStream(ChannelDescriptor ch);
     void teardownAllStreams();
     void calibrateChannel(int idx);
+    // Retune an actively streaming RX channel. Parks the worker via
+    // checkPauseForRetune, stops/reconfigures/restarts the LMS stream
+    // (needed to flush the FPGA FIFO), then releases the worker.
+    void performStreamingRetune(int rxIdx, double hz);
 
     lms_device_t*  handle_{nullptr};
     lms_info_str_t deviceId_{};
@@ -124,9 +130,21 @@ private:
     double currentTxFrequency_[2]  = {102e6, 102e6};  // TX
     double currentTxGainDb_[2]     = {0.0,   0.0  };  // TX
 
-    // Pending LO change posted from UI thread, applied in readBlock() on worker thread.
-    static constexpr double kNoFreqPending = -1.0;
-    std::atomic<double> pendingFrequency_[2];   // initialized in ctor
+    // ── Retune handshake (per RX channel) ────────────────────────────────────
+    // UI thread setFrequency(ch, hz) on a streaming channel must not race
+    // with RxWorker's LMS_RecvStream. Protocol:
+    //   1. UI thread: lock mutex, set retuneInProgress_[idx]=true, notify_all.
+    //   2. UI thread: wait for workerParked_[idx]==true.
+    //   3. Worker (in checkPauseForRetune): sets workerParked_=true, notifies,
+    //      waits for retuneInProgress_==false.
+    //   4. UI thread: performs LMS_StopStream/SetLO/StartStream, emits retuned()
+    //      (DirectConnection → handlers reset DSP state), clears
+    //      retuneInProgress_=false, notify_all.
+    //   5. Worker: wakes, clears workerParked_, returns from checkPauseForRetune.
+    mutable std::mutex              retuneMutex_;
+    std::condition_variable         retuneCv_;
+    bool                            retuneInProgress_[2] = {false, false};
+    bool                            workerParked_[2]     = {false, false};
 
     // ── Per-channel streams ───────────────────────────────────────────────────
     std::map<ChannelDescriptor, lms_stream_t> streams_;

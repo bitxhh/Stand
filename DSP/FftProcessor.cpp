@@ -113,23 +113,23 @@ const std::vector<float>& getHannWindow(int n) {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-FftFrame FftProcessor::process(const QVector<int16_t>& iqSamples,
+FftFrame FftProcessor::process(const float* iq, int count,
                                double centerFreqMHz,
                                double sampleRateHz)
 {
-    if (iqSamples.size() < 2 || (iqSamples.size() % 2) != 0)
-        throw std::runtime_error("IQ buffer must contain an even number of int16 values");
+    if (count < 1)
+        throw std::runtime_error("IQ buffer must contain at least one I/Q pair");
 
-    const int fftSize = iqSamples.size() / 2;
+    const int fftSize = count;
 
     auto& cp     = getPlan(fftSize);
     auto& window = getHannWindow(fftSize);
 
-    // ── Fill input buffer (float) ────────────────────────────────────────────
+    // ── Fill input buffer — data already normalized to [-1, 1] ──────────────
     for (int i = 0; i < fftSize; ++i) {
         const float w = window[i];
-        cp.in[i][0] = static_cast<float>(iqSamples[2 * i])     / 32768.0f * w;
-        cp.in[i][1] = static_cast<float>(iqSamples[2 * i + 1]) / 32768.0f * w;
+        cp.in[i][0] = iq[2 * i]     * w;
+        cp.in[i][1] = iq[2 * i + 1] * w;
     }
 
     // ── Execute (reuses preallocated buffers and plan) ────────────────────────

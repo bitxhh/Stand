@@ -24,7 +24,7 @@ public:
     void setPlotFps(int fps);              // thread-safe
 
     // IPipelineHandler
-    void processBlock(const int16_t* iq, int count, double sampleRateHz) override;
+    void processBlock(const float* iq, int count, double sampleRateHz) override;
     void onStreamStarted(double sampleRateHz) override;
     void onStreamStopped() override;
 

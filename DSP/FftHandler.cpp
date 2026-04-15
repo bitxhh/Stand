@@ -1,7 +1,5 @@
 #include "FftHandler.h"
 
-#include <QVector>
-
 FftHandler::FftHandler(QObject* parent)
     : QObject(parent)
     , lastPlot_(Clock::now())
@@ -25,18 +23,15 @@ void FftHandler::onStreamStarted(double sampleRateHz) {
 
 void FftHandler::onStreamStopped() {}
 
-void FftHandler::processBlock(const int16_t* iq, int count, double sampleRateHz) {
+void FftHandler::processBlock(const float* iq, int count, double sampleRateHz) {
     const auto now     = Clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPlot_);
     if (elapsed.count() < plotIntervalMs_.load()) return;
     lastPlot_ = now;
 
-    // Копируем в QVector — происходит только plotFps раз/с
-    const QVector<int16_t> block(iq, iq + count * 2);
-
     try {
         const double currentCenter = centerFreqMhz_.load();
-        FftFrame frame = FftProcessor::process(block, currentCenter, sampleRateHz);
+        FftFrame frame = FftProcessor::process(iq, count, currentCenter, sampleRateHz);
 
         // Temporal EMA: blend new frame into running average.
         // Reset if the center frequency changed (frequency axis shifted).

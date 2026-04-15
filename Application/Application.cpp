@@ -150,12 +150,35 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
 }
 
 DeviceDetailWindow::~DeviceDetailWindow() {
-    // Stop the watchdog before teardown — the QFutureWatcher captures `this`
-    // in its lambda; if the future is still in-flight when we start destroying
-    // members, it would access freed memory via the this pointer.
+    // closeEvent() handles the full teardown sequence (streams + device->close()).
+    // This guard prevents a crash if the window is deleted without being closed first.
     connectionTimer->stop();
-    connectionWatcher.waitForFinished();   // blocks until any pending scan completes
-    // RxController destructors handle stream teardown (they are children of this)
+    connectionWatcher.waitForFinished();
+}
+
+void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
+    // ── 1. Stop timers — prevent new watchdog/plot/metrics calls during teardown ──
+    connectionTimer->stop();
+    connectionWatcher.waitForFinished();
+    if (plotTimer_)    plotTimer_->stop();
+    if (metricsTimer_) metricsTimer_->stop();
+
+    // ── 2. Synchronously stop all RX streams ─────────────────────────────────────
+    // shutdown() calls teardownStream() which blocks until the worker thread exits
+    // (up to 3 s). Must happen before device->close() / LMS_Close().
+    for (auto* p : channelPanels_)
+        if (auto* ctrl = p->appController())
+            ctrl->shutdown();
+
+    // ── 3. Synchronously stop TX ─────────────────────────────────────────────────
+    if (txCtrl_) txCtrl_->shutdown();
+
+    // ── 4. Close hardware — tears down LMS handle, resets state to Connected ─────
+    // After this call the device is no longer initialised; reopening the same device
+    // from DeviceSelectionWindow will show a fresh "not initialized" UI.
+    device->close();
+
+    QMainWindow::closeEvent(event);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -194,7 +217,9 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     auto* title = new QLabel("Device control", page);
     title->setStyleSheet("font-weight: 600; font-size: 16px;");
 
-    initStatusLabel    = new QLabel("Device not initialized", page);
+    const bool ready   = controller_->isInitialized();
+    initStatusLabel    = new QLabel(ready ? "Device initialized \u2713" : "Device not initialized", page);
+    if (ready) initStatusLabel->setStyleSheet("color: #00cc44;");
     controlStatusLabel = new QLabel(page);
     controlStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
 
@@ -204,8 +229,6 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
 
     auto* initButton = new QPushButton("Initialize device", page);
     calibrateButton  = new QPushButton("Calibrate",         page);
-
-    const bool ready = controller_->isInitialized();
     sampleRateSelector->setEnabled(ready);
     calibrateButton->setEnabled(ready);
 
@@ -741,6 +764,7 @@ void DeviceSelectionWindow::openDevice(const std::shared_ptr<IDevice>& dev) {
         sessions_.release(devId);
     });
 
+    window->resize(1600, 750);
     window->show();
 }
 

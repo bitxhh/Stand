@@ -133,20 +133,20 @@ double BaseDemodulator::fir2Step(double x) {
 // ---------------------------------------------------------------------------
 // Main processing
 // ---------------------------------------------------------------------------
-QVector<float> BaseDemodulator::pushBlock(const QVector<int16_t>& iqBlock) {
-    if (iqBlock.size() < 2 || (iqBlock.size() % 2) != 0)
+QVector<float> BaseDemodulator::pushBlock(const float* iq, int count) {
+    if (count < 1)
         return {};
 
-    const int numSamples = iqBlock.size() / 2;
+    const int numSamples = count;
 
     QVector<float> audio;
     audio.reserve(numSamples / (D1_ * D2_) + 4);
 
     for (int i = 0; i < numSamples; ++i) {
 
-        // ── 1. int16 → normalised complex ────────────────────────────────────
-        const double iVal = static_cast<double>(iqBlock[2 * i])     / 32768.0;
-        const double qVal = static_cast<double>(iqBlock[2 * i + 1]) / 32768.0;
+        // ── 1. Normalised float32 → complex double ────────────────────────────
+        const double iVal = static_cast<double>(iq[2 * i]);
+        const double qVal = static_cast<double>(iq[2 * i + 1]);
         std::complex<double> s{iVal, qVal};
 
         // ── 2. DC blocker ────────────────────────────────────────────────────

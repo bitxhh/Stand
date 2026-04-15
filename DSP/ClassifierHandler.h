@@ -22,7 +22,7 @@
 //   [8B uint64  hardware timestamp]
 //   [4B int32   sample count N]
 //   [8B float64 sample rate Hz]
-//   [N*2*2B int16 I/Q pairs, interleaved: I0,Q0,I1,Q1,...]
+//   [N*2*4B float32 I/Q pairs, interleaved: I0,Q0,I1,Q1,...]
 // ---------------------------------------------------------------------------
 class ClassifierHandler : public QObject, public IPipelineHandler {
     Q_OBJECT
@@ -31,8 +31,8 @@ public:
     explicit ClassifierHandler(QObject* parent = nullptr);
 
     // IPipelineHandler
-    void processBlock(const int16_t* iq, int count, double sampleRateHz) override;
-    void processBlock(const int16_t* iq, int count, double sampleRateHz,
+    void processBlock(const float* iq, int count, double sampleRateHz) override;
+    void processBlock(const float* iq, int count, double sampleRateHz,
                       const BlockMeta& meta) override;
 
     // Minimum milliseconds between frames sent to classifier (rate limit).
@@ -43,7 +43,7 @@ signals:
     void frameReady(QByteArray frame);
 
 private:
-    static QByteArray serialize(const int16_t* iq, int count,
+    static QByteArray serialize(const float* iq, int count,
                                 double sampleRateHz, uint64_t timestamp);
 
     std::atomic<int> intervalMs_{100};

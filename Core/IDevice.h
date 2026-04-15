@@ -53,6 +53,9 @@ public:
     // ── Жизненный цикл ───────────────────────────────────────────────────────
     virtual void init()          = 0;   // инициализация железа
     virtual void calibrate(const QList<ChannelDescriptor>& channels = {}) {}  // опционально
+    // Останавливает все стримы, закрывает хэндл и сбрасывает состояние в Connected.
+    // Вызывается из UI-потока при закрытии DeviceDetailWindow.
+    virtual void close() {}
 
     // ── Параметры ─────────────────────────────────────────────────────────────
     virtual void   setSampleRate(double hz)               = 0;
@@ -92,6 +95,11 @@ public:
     virtual int  readBlock(ChannelDescriptor /*ch*/, int16_t* buffer, int count, int timeoutMs) {
         return readBlock(buffer, count, timeoutMs);
     }
+
+    // Worker-side pause point for retune handshake. Called at the top of the
+    // RxWorker loop. Default no-op; LimeDevice blocks here while UI thread
+    // performs an LO retune, then resumes.
+    virtual void checkPauseForRetune(ChannelDescriptor /*ch*/) {}
     virtual void setFrequency(ChannelDescriptor /*ch*/, double hz) { setFrequency(hz); }
     virtual void setGain(ChannelDescriptor /*ch*/, double dB)      { setGain(dB); }
 
@@ -129,4 +137,11 @@ signals:
     void stateChanged(DeviceState newState);
     void errorOccurred(const QString& message);
     void sampleRateChanged(double hz);
+
+    // Emitted after an LO retune has completed on worker-safe boundary
+    // (worker parked, LMS_SetLOFrequency applied, stream restarted).
+    // Handlers with accumulated DSP state (FIR delay line, NCO phase, WAV
+    // decimation) must reset on this signal. Connected with DirectConnection
+    // from RxController so the slot runs before the worker is unparked.
+    void retuned(ChannelDescriptor ch, double hz);
 };

@@ -11,7 +11,8 @@ RxWorker::RxWorker(IDevice* device, Pipeline* pipeline,
     , pipeline_(pipeline)
     , channel_(channel)
 {
-    buffer_.resize(kBlockSize * 2);   // interleaved I/Q: count * 2 int16
+    buffer_.resize(kBlockSize * 2);     // interleaved I/Q: count * 2 int16
+    floatBuf_.resize(kBlockSize * 2);   // normalized float32 copy
 }
 
 void RxWorker::stop() {
@@ -42,6 +43,12 @@ void RxWorker::run() {
 
     // Основной цикл
     while (running_.load()) {
+        // Park point for UI-thread retune: if the main thread has set
+        // retuneInProgress_, this blocks until LMS_StopStream/SetLO/StartStream
+        // and handler state reset are done.  Must come BEFORE readBlock so
+        // the worker isn't inside LMS_RecvStream when the UI mutates streams_.
+        device_->checkPauseForRetune(channel_);
+
         // 100 ms timeout — keeps LMS_RecvStream from holding the device mutex
         // too long and blocking main-thread calls (e.g. LMS_SetLOFrequency).
         const int n = device_->readBlock(channel_, buffer_.data(), kBlockSize, 100);
@@ -65,12 +72,19 @@ void RxWorker::run() {
                      + " got " + std::to_string(n) + " — continuing");
         }
 
-        pipeline_->dispatchBlock(buffer_.data(), n, sr,
+        // Single int16→float conversion at hardware boundary (/ 32768.0f → [-1, 1])
+        for (int i = 0; i < n * 2; ++i)
+            floatBuf_[i] = buffer_[i] * (1.0f / 32768.0f);
+
+        pipeline_->dispatchBlock(floatBuf_.data(), n, sr,
                                 BlockMeta{channel_, device_->lastReadTimestamp(channel_)});
     }
 
     pipeline_->notifyStopped();
-    device_->stopStream(channel_);
+    // NOTE: device_->stopStream(channel_) is intentionally NOT called here.
+    // Mutating streams_ from the worker thread races with UI-thread operations
+    // that touch the same map (setFrequency on a streaming channel, close()).
+    // RxController calls stopStream on the main thread after finished().
 
     LOG_INFO("RxWorker finished: " + devId.toStdString());
     emit statusMessage(QString("Stream stopped: %1").arg(devId));

@@ -43,7 +43,7 @@ void BaseDemodHandler::onStreamStopped() {
     dem_.reset();
 }
 
-void BaseDemodHandler::processBlock(const int16_t* iq, int count, double sampleRateHz) {
+void BaseDemodHandler::processBlock(const float* iq, int count, double sampleRateHz) {
     // Lazy-init: handler may have been added mid-stream via pipeline_->addHandler(),
     // in which case onStreamStarted() was never called for it.
     if (!dem_) {
@@ -64,8 +64,7 @@ void BaseDemodHandler::processBlock(const int16_t* iq, int count, double sampleR
     if (pendingOff < 1e37)
         dem_->setOffset(pendingOff);
 
-    const QVector<int16_t> block(iq, iq + count * 2);
-    const QVector<float> audio = dem_->pushBlock(block);
+    const QVector<float> audio = dem_->pushBlock(iq, count);
     if (!audio.isEmpty())
         emit audioReady(audio, dem_->audioSampleRate());
 }

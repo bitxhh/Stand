@@ -1,4 +1,5 @@
 #include "RxController.h"
+#include "../Core/IDevice.h"
 #include "../DSP/DemodRegistry.h"
 #include "Logger.h"
 
@@ -65,6 +66,14 @@ void RxController::startStream(const StreamConfig& cfg) {
             streamThread_, &QThread::quit, Qt::QueuedConnection);
     connect(streamThread_, &QThread::finished, streamWorker_, &QObject::deleteLater);
     connect(streamThread_, &QThread::finished, streamThread_, &QObject::deleteLater);
+
+    // LO retune fan-out. DirectConnection so the slot runs synchronously on
+    // the UI thread inside LimeDevice::performStreamingRetune — i.e. while
+    // the worker is still parked and retuneInProgress_ is still true.
+    // That guarantees handlers reset their DSP state before the worker
+    // resumes and dispatches the next (post-retune) block.
+    connect(device_, &IDevice::retuned,
+            this, &RxController::onDeviceRetuned, Qt::DirectConnection);
 
     streamThread_->start();
 }
@@ -149,10 +158,27 @@ double RxController::ifRms() const {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal cleanup
 // ═══════════════════════════════════════════════════════════════════════════════
-void RxController::onStreamFinishedInternal() {
-    // streamWorker/streamThread are deleted via deleteLater
-    streamWorker_ = nullptr;
-    streamThread_ = nullptr;
+void RxController::performCleanup() {
+    // Idempotent: both teardownStream() and onStreamFinishedInternal() may
+    // call us, and Qt does not always suppress already-queued finished()
+    // calls after a disconnect. Gate on pipeline_ — it's the first thing
+    // created in startStream() and the last thing we null out.
+    if (!pipeline_) return;
+
+    // Worker loop has exited run() at this point — either because it hit an
+    // error, stop() was called, or the caller is tearing down.  The LMS stream
+    // is still open (RxWorker no longer calls stopStream to avoid mutating
+    // streams_ from the worker thread), so we stop it here on the main thread.
+    if (device_) {
+        try { device_->stopStream(channel_); }
+        catch (const std::exception& ex) {
+            LOG_WARN(std::string("RxController::performCleanup stopStream: ") + ex.what());
+        }
+    }
+
+    // Drop the retune connection before destroying the pipeline — otherwise a
+    // late UI-thread retune signal could still fire into a dangling slot.
+    disconnect(device_, &IDevice::retuned, this, &RxController::onDeviceRetuned);
 
     if (pipeline_) {
         pipeline_->clearHandlers();
@@ -173,33 +199,34 @@ void RxController::onStreamFinishedInternal() {
         disconnect(audioOut_, nullptr, this, nullptr);
         audioOut_->teardown();
     }
+}
 
+void RxController::onStreamFinishedInternal() {
+    // streamWorker/streamThread are deleted via deleteLater
+    streamWorker_ = nullptr;
+    streamThread_ = nullptr;
+    performCleanup();
     emit streamFinished();
 }
 
 void RxController::teardownStream() {
+    // Break the finished → onStreamFinishedInternal link first: we're going
+    // to clean up synchronously here, and a queued finished() firing after
+    // our cleanup would double-delete everything.
+    if (streamWorker_)
+        disconnect(streamWorker_, &RxWorker::finished,
+                   this, &RxController::onStreamFinishedInternal);
+
     if (streamWorker_) streamWorker_->stop();
     if (streamThread_) { streamThread_->quit(); streamThread_->wait(3000); }
     streamWorker_ = nullptr;
     streamThread_ = nullptr;
 
-    if (pipeline_) {
-        pipeline_->clearHandlers();
-        delete pipeline_;
-        pipeline_ = nullptr;
-    }
+    performCleanup();
+}
 
-    delete fftHandler_;      fftHandler_     = nullptr;
-    delete demodHandler_;    demodHandler_   = nullptr;
-
-    for (auto* h : rawHandlers_) delete h;
-    rawHandlers_.clear();
-    for (auto* h : wavHandlers_) delete h;
-    wavHandlers_.clear();
-    extraHandlers_.clear();   // not owned here
-
-    if (audioOut_) {
-        disconnect(audioOut_, nullptr, this, nullptr);
-        audioOut_->teardown();
-    }
+void RxController::onDeviceRetuned(ChannelDescriptor ch, double hz) {
+    if (!(ch == channel_)) return;
+    if (fftHandler_) fftHandler_->setCenterFrequency(hz / 1e6);
+    if (pipeline_)   pipeline_->notifyRetune(hz);
 }

@@ -92,6 +92,13 @@ bool BandpassExporter::open(const QString& path) {
     return true;
 }
 
+void BandpassExporter::resetDspState() {
+    decimationCounter_ = 0;
+    nco_.reset();
+    firDelayLine_.assign(kFirTaps, {0.0, 0.0});
+    firHead_ = 0;
+}
+
 void BandpassExporter::close() {
     if (!fileHandle_) return;
     patchWavHeader();
@@ -105,16 +112,16 @@ void BandpassExporter::close() {
 // ---------------------------------------------------------------------------
 // Main processing loop
 // ---------------------------------------------------------------------------
-void BandpassExporter::pushBlock(const QVector<int16_t>& iqBlock) {
+void BandpassExporter::pushBlock(const float* iq, int count) {
     if (!fileHandle_) return;
-    if (iqBlock.size() < 2 || (iqBlock.size() % 2) != 0) return;
+    if (count < 1) return;
 
-    const int numSamples = iqBlock.size() / 2;
+    const int numSamples = count;
 
     for (int i = 0; i < numSamples; ++i) {
-        // ── 1. Convert int16 to normalised complex float ─────────────────────
-        const double iVal = static_cast<double>(iqBlock[2 * i])     / 32768.0;
-        const double qVal = static_cast<double>(iqBlock[2 * i + 1]) / 32768.0;
+        // ── 1. Normalised float32 → complex double ───────────────────────────
+        const double iVal = static_cast<double>(iq[2 * i]);
+        const double qVal = static_cast<double>(iq[2 * i + 1]);
         std::complex<double> sample{iVal, qVal};
 
         // ── 2. Frequency shift ──────────────────────────────────────────────

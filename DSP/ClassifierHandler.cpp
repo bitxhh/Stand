@@ -14,11 +14,11 @@ void ClassifierHandler::setIntervalMs(int ms) {
 // ---------------------------------------------------------------------------
 // IPipelineHandler
 // ---------------------------------------------------------------------------
-void ClassifierHandler::processBlock(const int16_t* iq, int count, double sampleRateHz) {
+void ClassifierHandler::processBlock(const float* iq, int count, double sampleRateHz) {
     processBlock(iq, count, sampleRateHz, BlockMeta{});
 }
 
-void ClassifierHandler::processBlock(const int16_t* iq, int count,
+void ClassifierHandler::processBlock(const float* iq, int count,
                                      double sampleRateHz, const BlockMeta& meta)
 {
     const auto now = Clock::now();
@@ -33,11 +33,13 @@ void ClassifierHandler::processBlock(const int16_t* iq, int count,
 // ---------------------------------------------------------------------------
 // Frame serialization — little-endian throughout
 // ---------------------------------------------------------------------------
-QByteArray ClassifierHandler::serialize(const int16_t* iq, int count,
+QByteArray ClassifierHandler::serialize(const float* iq, int count,
                                         double sampleRateHz, uint64_t timestamp)
 {
     const int32_t n          = static_cast<int32_t>(count);
-    const uint32_t payloadLen = static_cast<uint32_t>(8 + 4 + 8 + n * 2 * sizeof(int16_t));
+    // NOTE: frame protocol change — I/Q payload is now float32 (4B/sample)
+    // Python classifier must be updated to unpack with np.frombuffer(..., dtype=np.float32)
+    const uint32_t payloadLen = static_cast<uint32_t>(8 + 4 + 8 + n * 2 * sizeof(float));
 
     QByteArray buf;
     buf.reserve(static_cast<qsizetype>(4 + payloadLen));
@@ -69,6 +71,6 @@ QByteArray ClassifierHandler::serialize(const int16_t* iq, int count,
     appendI32(n);
     appendF64(sampleRateHz);
     buf.append(reinterpret_cast<const char*>(iq),
-               static_cast<qsizetype>(n * 2 * sizeof(int16_t)));
+               static_cast<qsizetype>(n * 2 * sizeof(float)));
     return buf;
 }

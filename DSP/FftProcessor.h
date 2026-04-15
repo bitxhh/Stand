@@ -2,7 +2,6 @@
 
 #include <QMetaType>
 #include <QVector>
-#include <cstdint>
 #include <memory>
 
 struct FftFrame {
@@ -21,12 +20,13 @@ Q_DECLARE_METATYPE(FftFrame)
 // ---------------------------------------------------------------------------
 class FftProcessor {
 public:
-    // Process one block of interleaved I/Q int16 samples.
+    // Process one block of interleaved float32 I/Q samples (normalized to [-1, 1]).
     // Returns a frame ready to hand to QCustomPlot::setData().
     //
+    // iq           — interleaved float32 [I0,Q0,I1,Q1,...], count I/Q pairs
     // centerFreqMHz — value from the spin-box (e.g. 102.0)
     // sampleRateHz  — value from Device::get_sample_rate() (e.g. 2 000 000)
-    static FftFrame process(const QVector<int16_t>& iqSamples,
+    static FftFrame process(const float* iq, int count,
                             double centerFreqMHz,
                             double sampleRateHz);
 };

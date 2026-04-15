@@ -25,8 +25,8 @@ void RawFileHandler::onStreamStopped() {
     }
 }
 
-void RawFileHandler::processBlock(const int16_t* iq, int count, double /*sampleRateHz*/) {
+void RawFileHandler::processBlock(const float* iq, int count, double /*sampleRateHz*/) {
     if (file_.is_open())
         file_.write(reinterpret_cast<const char*>(iq),
-                    static_cast<std::streamsize>(count) * 2 * sizeof(int16_t));
+                    static_cast<std::streamsize>(count) * 2 * sizeof(float));
 }

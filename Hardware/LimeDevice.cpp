@@ -95,8 +95,6 @@ LimeDevice::LimeDevice(const lms_info_str_t& id, QObject* parent)
 {
     std::memcpy(deviceId_, id, sizeof(lms_info_str_t));
     serial_ = parseSerial(id);
-    pendingFrequency_[0].store(kNoFreqPending);
-    pendingFrequency_[1].store(kNoFreqPending);
     LOG_DEBUG("LimeDevice created: " + serial_);
 }
 
@@ -107,6 +105,22 @@ LimeDevice::~LimeDevice() {
         LMS_Close(handle_);
         handle_ = nullptr;
     }
+}
+
+// ---------------------------------------------------------------------------
+// IDevice: close — останавливает все стримы, закрывает хэндл, сбрасывает в Connected.
+// Вызывается из UI-потока при закрытии DeviceDetailWindow.
+// ---------------------------------------------------------------------------
+void LimeDevice::close() {
+    if (!handle_) {
+        setState(DeviceState::Connected);
+        return;
+    }
+    LOG_INFO("LimeDevice::close: " + serial_);
+    teardownAllStreams();
+    LMS_Close(handle_);
+    handle_ = nullptr;
+    setState(DeviceState::Connected);
 }
 
 // ---------------------------------------------------------------------------
@@ -365,12 +379,12 @@ void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
     }
 
     // RX path
-    // При стриминге ВСЕ LimeSuite-вызовы откладываем на worker thread (readBlock),
-    // чтобы не гонять LMS_SetAntenna/LMS_SetLOFrequency из UI-потока параллельно
-    // с LMS_RecvStream — это вызывает краш.
+    // Streaming retune runs through a synchronous handshake: the worker is
+    // parked in checkPauseForRetune(), we perform LMS_StopStream → LO →
+    // StartStream (to flush the FPGA FIFO), emit retuned() so DSP handlers
+    // can reset their state, then release the worker.
     if (state_ == DeviceState::Streaming) {
-        currentFrequency_[idx] = hz;
-        pendingFrequency_[idx].store(hz);  // antenna + LO применятся в readBlock
+        performStreamingRetune(idx, hz);
         return;
     }
 
@@ -396,6 +410,7 @@ void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
     }
 
     currentFrequency_[idx] = hz;
+    emit retuned(ch, hz);
 }
 
 // ---------------------------------------------------------------------------
@@ -547,63 +562,110 @@ void LimeDevice::stopStream(ChannelDescriptor ch) {
 }
 
 int LimeDevice::readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) {
-    const int idx = ch.channelIndex;
-
     auto it = streams_.find(ch);
     if (it == streams_.end()) return -1;
-
-    // Apply pending LO change on the worker thread — avoids race with LMS_RecvStream.
-    // We stop the stream, apply antenna + LO, then restart — this flushes the FPGA FIFO
-    // so the subsequent LMS_RecvStream doesn't see stale/corrupt data from before the
-    // LO re-tune. Without the stop/restart, LMS_RecvStream often returns -1 after a
-    // LO change, which terminates the stream unexpectedly.
-    const double freq = pendingFrequency_[idx].exchange(kNoFreqPending);
-    if (freq != kNoFreqPending) {
-        // Antenna switch (safe to call even if value unchanged)
-        const int ant = antennaForFrequency(freq);
-        if (LMS_SetAntenna(handle_, LMS_CH_RX, idx, ant) != 0)
-            LOG_WARN("LMS_SetAntenna (deferred) failed: RX"
-                     + std::to_string(idx) + " on " + serial_);
-        else
-            LOG_DEBUG("Antenna (deferred) RX" + std::to_string(idx)
-                      + " → " + antennaName(ant));
-
-        // Stop → change LO → restart to flush FIFO.
-        // LMS_StopStream / LMS_StartStream only affect this channel's stream;
-        // the other channel (dual RX) keeps streaming uninterrupted.
-        LMS_StopStream(&it->second);
-
-        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, freq) != 0) {
-            LOG_WARN("LMS_SetLOFrequency (deferred) failed: RX"
-                     + std::to_string(idx) + " on " + serial_);
-        } else {
-            float_type actualLo = 0;
-            LMS_GetLOFrequency(handle_, LMS_CH_RX, idx, &actualLo);
-            if (std::abs(actualLo - freq) > 1e3)
-                LOG_WARN("LO mismatch (deferred) RX" + std::to_string(idx)
-                         + ": requested " + std::to_string(freq / 1e6)
-                         + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
-            else
-                LOG_DEBUG("LO updated: RX" + std::to_string(idx)
-                          + " → " + std::to_string(freq / 1e6) + " MHz");
-        }
-
-        if (LMS_StartStream(&it->second) != 0) {
-            LOG_WARN("LMS_StartStream after LO change failed: RX"
-                     + std::to_string(idx) + " on " + serial_);
-            return -1;
-        }
-
-        // Return 0 (timeout) — skip this block entirely.
-        // Any samples captured before/during the LO change are invalid.
-        return 0;
-    }
 
     lms_stream_meta_t meta{};
     const int n = LMS_RecvStream(&it->second, buffer, count, &meta, timeoutMs);
     if (n > 0)
         lastTimestamp_[ch] = meta.timestamp;
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// Retune handshake — see LimeDevice.h for protocol documentation.
+// ---------------------------------------------------------------------------
+void LimeDevice::checkPauseForRetune(ChannelDescriptor ch) {
+    if (ch.direction != ChannelDescriptor::RX) return;
+    const int idx = ch.channelIndex;
+    if (idx < 0 || idx >= 2) return;
+
+    std::unique_lock lock(retuneMutex_);
+    if (!retuneInProgress_[idx]) return;  // fast path — no retune pending
+
+    workerParked_[idx] = true;
+    retuneCv_.notify_all();
+    retuneCv_.wait(lock, [this, idx] { return !retuneInProgress_[idx]; });
+    workerParked_[idx] = false;
+}
+
+void LimeDevice::performStreamingRetune(int idx, double hz) {
+    // Snapshot key data while not yet parked so we fail fast on a bad idx.
+    auto it = streams_.find({ChannelDescriptor::RX, idx});
+    if (it == streams_.end()) {
+        // No active stream for this channel — apply directly.
+        if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, hz) != 0)
+            throwLime("LMS_SetLOFrequency failed");
+        currentFrequency_[idx] = hz;
+        emit retuned({ChannelDescriptor::RX, idx}, hz);
+        return;
+    }
+
+    // ── Phase 1: park the worker ─────────────────────────────────────────────
+    {
+        std::unique_lock lock(retuneMutex_);
+        retuneInProgress_[idx] = true;
+        retuneCv_.notify_all();
+        // Wait for worker to enter checkPauseForRetune().
+        // 1s is well above any sane LMS_RecvStream timeout — if we exceed it
+        // the worker is likely blocked or dead; proceed anyway (best-effort).
+        if (!retuneCv_.wait_for(lock, std::chrono::seconds(1),
+                                [this, idx] { return workerParked_[idx]; })) {
+            LOG_WARN("performStreamingRetune RX" + std::to_string(idx)
+                     + ": worker did not park within 1s — proceeding");
+        }
+    }
+
+    // ── Phase 2: mutate LMS state while worker is parked ─────────────────────
+    // Antenna switch (safe to call even if value unchanged)
+    const int ant = antennaForFrequency(hz);
+    if (LMS_SetAntenna(handle_, LMS_CH_RX, idx, ant) != 0)
+        LOG_WARN("LMS_SetAntenna (retune) failed: RX" + std::to_string(idx));
+    else
+        LOG_DEBUG("Antenna (retune) RX" + std::to_string(idx)
+                  + " → " + antennaName(ant));
+
+    // Stop → change LO → restart to flush FPGA FIFO.
+    // LMS_StopStream / LMS_StartStream only affect this channel's stream;
+    // the other channel (dual RX) keeps streaming uninterrupted.
+    LMS_StopStream(&it->second);
+
+    bool ok = true;
+    if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, hz) != 0) {
+        LOG_WARN("LMS_SetLOFrequency (retune) failed: RX" + std::to_string(idx));
+        ok = false;
+    } else {
+        float_type actualLo = 0;
+        LMS_GetLOFrequency(handle_, LMS_CH_RX, idx, &actualLo);
+        if (std::abs(actualLo - hz) > 1e3)
+            LOG_WARN("LO mismatch (retune) RX" + std::to_string(idx)
+                     + ": requested " + std::to_string(hz / 1e6)
+                     + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
+        else
+            LOG_DEBUG("LO updated: RX" + std::to_string(idx)
+                      + " → " + std::to_string(hz / 1e6) + " MHz");
+    }
+
+    if (LMS_StartStream(&it->second) != 0) {
+        LOG_WARN("LMS_StartStream after retune failed: RX" + std::to_string(idx));
+        ok = false;
+    }
+
+    if (ok)
+        currentFrequency_[idx] = hz;
+
+    // ── Phase 3: notify handlers BEFORE unparking worker ─────────────────────
+    // DirectConnection: pipeline_->notifyRetune(hz) runs synchronously here,
+    // so handler DSP state (FIR delay line, NCO phase, decimation counter)
+    // is reset while the worker is still parked — race-free.
+    emit retuned({ChannelDescriptor::RX, idx}, hz);
+
+    // ── Phase 4: release the worker ──────────────────────────────────────────
+    {
+        std::lock_guard lock(retuneMutex_);
+        retuneInProgress_[idx] = false;
+    }
+    retuneCv_.notify_all();
 }
 
 uint64_t LimeDevice::lastReadTimestamp(ChannelDescriptor ch) const {

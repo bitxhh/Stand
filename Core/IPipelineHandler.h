@@ -38,15 +38,16 @@ public:
     virtual ~IPipelineHandler() = default;
 
     // Вызывается на каждый I/Q блок.
-    // iq    — interleaved int16 [I0, Q0, I1, Q1, ...] (указатель валиден только во время вызова)
-    // count — количество I/Q пар (размер буфера = count * 2 * sizeof(int16_t))
+    // iq    — interleaved float32 [I0, Q0, I1, Q1, ...] нормированный к [-1, 1]
+    //         (указатель валиден только во время вызова)
+    // count — количество I/Q пар (размер буфера = count * 2 * sizeof(float))
     // sampleRateHz — текущая частота дискретизации устройства
-    virtual void processBlock(const int16_t* iq, int count, double sampleRateHz) = 0;
+    virtual void processBlock(const float* iq, int count, double sampleRateHz) = 0;
 
     // Extended overload with channel/timestamp metadata.
     // Default implementation calls the basic overload (ignoring meta) —
     // all existing handlers work without modification.
-    virtual void processBlock(const int16_t* iq, int count, double sampleRateHz,
+    virtual void processBlock(const float* iq, int count, double sampleRateHz,
                               const BlockMeta& /*meta*/) {
         processBlock(iq, count, sampleRateHz);
     }
@@ -56,4 +57,11 @@ public:
 
     // Вызывается один раз после остановки стрима (финализация файлов, flush и т.п.).
     virtual void onStreamStopped() {}
+
+    // Called when the device LO is retuned while the stream is active.
+    // Handlers with accumulated DSP state (NCO phase, FIR delay line,
+    // decimation counter) should reset it here — samples after the retune
+    // are spectrally discontinuous. Invoked on the UI thread via
+    // Pipeline::notifyRetune, synchronously, while the RX worker is parked.
+    virtual void onRetune(double /*newFreqHz*/) {}
 };

@@ -35,8 +35,11 @@ void BandpassHandler::onStreamStopped() {
     }
 }
 
-void BandpassHandler::processBlock(const int16_t* iq, int count, double /*sampleRateHz*/) {
+void BandpassHandler::processBlock(const float* iq, int count, double /*sampleRateHz*/) {
     if (!exp_) return;
-    const QVector<int16_t> block(iq, iq + count * 2);
-    exp_->pushBlock(block);
+    exp_->pushBlock(iq, count);
+}
+
+void BandpassHandler::onRetune(double /*newFreqHz*/) {
+    if (exp_) exp_->resetDspState();
 }

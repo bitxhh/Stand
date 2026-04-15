@@ -2,9 +2,7 @@
 
 #include "DspUtils.h"
 
-#include <QVector>
 #include <QString>
-#include <cstdint>
 #include <complex>
 #include <vector>
 
@@ -13,11 +11,11 @@
 //
 // DSP chain (all in double, I/Q float32 WAV output):
 //
-//   int16 I/Q  →  freq-shift to DC  →  FIR lowpass  →  decimate  →  WAV
+//   float32 I/Q  →  freq-shift to DC  →  FIR lowpass  →  decimate  →  WAV
 //
 // Designed for capturing a single FM station out of a wideband I/Q stream:
 //
-//   Input:  raw LimeSDR I/Q blocks (interleaved int16, I first)
+//   Input:  normalized float32 I/Q blocks (interleaved, I first, [-1,1])
 //           captured at inputSampleRateHz (e.g. 2 000 000)
 //
 //   Output: 2-channel float32 WAV (I = left, Q = right)
@@ -52,7 +50,14 @@ public:
     void close();
 
     // Feed one raw I/Q block.  Does nothing if not open.
-    void pushBlock(const QVector<int16_t>& iqBlock);
+    void pushBlock(const float* iq, int count);
+
+    // Reset DSP state that spans block boundaries: NCO phase, FIR delay line,
+    // decimation counter.  Called on LO retune — samples after the retune are
+    // spectrally discontinuous, stale delay-line taps would leak artifacts.
+    // WAV file position and samplesWritten_ are intentionally preserved —
+    // the capture keeps accumulating into the same file.
+    void resetDspState();
 
     // True between open() and close().
     [[nodiscard]] bool isOpen() const { return fileHandle_ != nullptr; }

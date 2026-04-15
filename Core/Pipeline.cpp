@@ -22,7 +22,7 @@ void Pipeline::clearHandlers() {
     handlers_.clear();
 }
 
-void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz) {
+void Pipeline::dispatchBlock(const float* iq, int count, double sampleRateHz) {
     // shared_lock позволяет параллельные dispatch, но блокирует
     // add/remove/clear до завершения — так delete handler'а в teardown
     // не произойдёт, пока processBlock ещё работает.
@@ -40,7 +40,7 @@ void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz) 
         f.waitForFinished();
 }
 
-void Pipeline::dispatchBlock(const int16_t* iq, int count, double sampleRateHz,
+void Pipeline::dispatchBlock(const float* iq, int count, double sampleRateHz,
                               const BlockMeta& meta) {
     std::shared_lock lock(mutex_);
     if (!pool_ || handlers_.size() <= 1) {
@@ -66,4 +66,10 @@ void Pipeline::notifyStopped() {
     std::shared_lock lock(mutex_);
     for (auto* h : handlers_)
         h->onStreamStopped();
+}
+
+void Pipeline::notifyRetune(double newFreqHz) {
+    std::shared_lock lock(mutex_);
+    for (auto* h : handlers_)
+        h->onRetune(newFreqHz);
 }

@@ -49,6 +49,9 @@ public:
     // ── Stream lifecycle ─────────────────────────────────────────────────────
     void startStream(const StreamConfig& cfg);
     void stopStream();
+    // Synchronous teardown — blocks until worker thread exits (up to 3 s).
+    // Call before IDevice::close() to ensure hardware streams are stopped.
+    void shutdown() { teardownStream(); }
     [[nodiscard]] bool isStreaming() const { return streamWorker_ != nullptr; }
 
     // ── Demodulator ──────────────────────────────────────────────────────────
@@ -81,6 +84,8 @@ signals:
 private:
     void teardownStream();
     void onStreamFinishedInternal();
+    void performCleanup();   // shared cleanup body for both paths above
+    void onDeviceRetuned(ChannelDescriptor ch, double hz);
 
     IDevice*          device_;
     ChannelDescriptor channel_{};
