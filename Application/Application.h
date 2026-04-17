@@ -35,6 +35,7 @@
 #include "SessionManager.h"
 
 class TxController;
+class RadioMonitorPage;
 
 class DeviceDetailWindow : public QMainWindow {
     Q_OBJECT
@@ -60,10 +61,8 @@ private slots:
     void onControllerError(const QString& message);
 
     // ── Stream ────────────────────────────────────────────────────────────────
-    void startStream();
-    void stopStream();
-    void onStreamError(const QString& error);
-    void onStreamFinished();
+    // Stream lifecycle is owned by RadioMonitorPage; DeviceDetailWindow reacts
+    // via radioMonitorPage_ signals (streamStarted / streamStopped / error).
 
 private:
     std::shared_ptr<IDevice> device;
@@ -71,11 +70,11 @@ private:
     DeviceController*        controller_{nullptr};
 
     // ── Navigation ────────────────────────────────────────────────────────────
-    QListWidget*    functionList{nullptr};
-    QStackedWidget* contentStack{nullptr};
-    QWidget*        deviceInfoPage{nullptr};
-    QWidget*        deviceControlPage{nullptr};
-    QWidget*        deviceFFTpage{nullptr};
+    QListWidget*      functionList{nullptr};
+    QStackedWidget*   contentStack{nullptr};
+    QWidget*          deviceInfoPage{nullptr};
+    QWidget*          deviceControlPage{nullptr};
+    RadioMonitorPage* radioMonitorPage_{nullptr};
 
     // ── Connection watchdog ───────────────────────────────────────────────────
     QTimer*                                           connectionTimer{nullptr};
@@ -103,21 +102,13 @@ private:
     [[nodiscard]] QList<ChannelDescriptor> selectedChannels() const;
     void updateChannelRowVisibility();
 
-    // ── FFT page — stream controls ────────────────────────────────────────────
-    QPushButton* streamStartButton{nullptr};
-    QPushButton* streamStopButton{nullptr};
-    QLabel*      streamStatusLabel{nullptr};
-
-    // ── Per-channel panels — one per RX channel from device->availableChannels() ──
-    QVector<ChannelPanel*> channelPanels_;
-
-    // ── DSP thread pool — shared across all RX-channel RxControllers ────────
+    // ── DSP thread pool — shared across RadioMonitorPage's pipeline ──────────
     QThreadPool* dspPool_{nullptr};
 
-    // ── Plot render timer (delegates to each ChannelPanel::replotIfDirty()) ───
+    // ── Plot render timer (delegates to RadioMonitorPage::replotIfDirty()) ───
     QTimer* plotTimer_{nullptr};
 
-    // ── Metrics timer (delegates to each ChannelPanel::updateMetrics()) ───────
+    // ── Metrics timer (delegates to RadioMonitorPage::updateMetrics()) ────────
     QTimer* metricsTimer_{nullptr};
 
     // ── Chip temperature indicator in status bar ─────────────────────────────
@@ -140,7 +131,7 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();
     QWidget* createDeviceControlPage();
-    QWidget* createDeviceFFTpage();
+    QWidget* createRadioMonitorPage();
     QWidget* createTxPage();
     void     stopAllStreams();
     void     refreshCurrentSampleRate() const;
