@@ -143,9 +143,23 @@ void LimeDevice::setState(DeviceState s) {
 // ---------------------------------------------------------------------------
 // IDevice: init
 // ---------------------------------------------------------------------------
-void LimeDevice::init() {
+void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
     LOG_INFO("LimeDevice init: " + serial_);
     setState(DeviceState::Connected);
+
+    // Decide which RX channels to enable. Empty list = all available RX.
+    bool enableRx[2] = {false, false};
+    if (channels.isEmpty()) {
+        enableRx[0] = enableRx[1] = true;
+    } else {
+        for (const auto& ch : channels) {
+            if (ch.direction == ChannelDescriptor::RX
+                && ch.channelIndex >= 0 && ch.channelIndex < 2)
+                enableRx[ch.channelIndex] = true;
+        }
+        if (!enableRx[0] && !enableRx[1])  // safety: at least one RX
+            enableRx[0] = true;
+    }
 
     static constexpr int kMaxRetries = 6;
     for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
@@ -188,16 +202,18 @@ void LimeDevice::init() {
     if (LMS_SetSampleRate(handle_, currentSampleRate_, 2) != 0)
         throwLime("LMS_SetSampleRate failed");
 
-    // Enable both RX channels. TX ch0 must be enabled for calibration loopback.
-    if (LMS_EnableChannel(handle_, LMS_CH_RX, 0, true) != 0)
-        throwLime("LMS_EnableChannel RX0 failed");
-    if (LMS_EnableChannel(handle_, LMS_CH_RX, 1, true) != 0)
-        throwLime("LMS_EnableChannel RX1 failed");
+    // Enable selected RX channels. TX ch0 must be enabled for calibration loopback.
+    for (int ch = 0; ch < 2; ++ch) {
+        if (LMS_EnableChannel(handle_, LMS_CH_RX, ch, enableRx[ch]) != 0)
+            throwLime("LMS_EnableChannel RX" + std::to_string(ch)
+                      + (enableRx[ch] ? " on" : " off") + " failed");
+    }
     if (LMS_EnableChannel(handle_, LMS_CH_TX, 0, true) != 0)
         throwLime("LMS_EnableChannel TX0 failed");
 
-    // Antenna and LO for both RX channels
+    // Antenna and LO — only for enabled RX channels.
     for (int ch = 0; ch < 2; ++ch) {
+        if (!enableRx[ch]) continue;
         const int ant = antennaForFrequency(currentFrequency_[ch]);
         if (LMS_SetAntenna(handle_, LMS_CH_RX, ch, ant) != 0)
             throwLime("LMS_SetAntenna RX" + std::to_string(ch) + " failed");
@@ -211,9 +227,10 @@ void LimeDevice::init() {
             throwLime("LMS_SetLOFrequency RX" + std::to_string(ch) + " failed");
     }
 
-    // Warm up WinUSB I/O context for both RX channels (required before worker-thread start).
+    // Warm up WinUSB I/O context for enabled RX channels.
     for (int ch = 0; ch < 2; ++ch)
-        setupStream({ChannelDescriptor::RX, ch});
+        if (enableRx[ch])
+            setupStream({ChannelDescriptor::RX, ch});
 
     setState(DeviceState::Ready);
     LOG_INFO("LimeDevice ready: " + serial_);
@@ -682,6 +699,31 @@ int LimeDevice::writeBlock(ChannelDescriptor ch, const int16_t* buffer,
     if (it == streams_.end()) return -1;
     return LMS_SendStream(&it->second, buffer, count, nullptr,
                           static_cast<unsigned>(timeoutMs));
+}
+
+// ---------------------------------------------------------------------------
+// Chip temperature (°C). NaN if handle not open or API call fails.
+// ---------------------------------------------------------------------------
+double LimeDevice::temperature() const {
+    if (!handle_) return std::nan("");
+    float_type t = 0;
+    if (LMS_GetChipTemperature(handle_, 0, &t) != 0)
+        return std::nan("");
+    return static_cast<double>(t);
+}
+
+// ---------------------------------------------------------------------------
+// Chip configuration persistence — proxies LimeSuite's LMS_Save/LoadConfig.
+// Requires the device handle to be open (i.e. after init()).
+// ---------------------------------------------------------------------------
+bool LimeDevice::saveConfig(const QString& path) const {
+    if (!handle_) return false;
+    return LMS_SaveConfig(handle_, path.toLocal8Bit().constData()) == 0;
+}
+
+bool LimeDevice::loadConfig(const QString& path) {
+    if (!handle_) return false;
+    return LMS_LoadConfig(handle_, path.toLocal8Bit().constData()) == 0;
 }
 
 // ---------------------------------------------------------------------------

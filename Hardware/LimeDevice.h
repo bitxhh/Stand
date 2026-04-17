@@ -33,7 +33,7 @@ public:
     [[nodiscard]] QString name() const override;
 
     // ── IDevice: жизненный цикл ───────────────────────────────────────────────
-    void init()      override;
+    void init(const QList<ChannelDescriptor>& channels = {}) override;
     void calibrate(const QList<ChannelDescriptor>& channels = {}) override;
     void close()     override;
 
@@ -75,6 +75,13 @@ public:
 
     // ── IDevice: состояние ────────────────────────────────────────────────────
     [[nodiscard]] DeviceState state() const override { return state_; }
+
+    // ── IDevice: температура чипа ─────────────────────────────────────────────
+    [[nodiscard]] double temperature() const override;
+
+    // ── IDevice: persistence ──────────────────────────────────────────────────
+    bool saveConfig(const QString& path) const override;
+    bool loadConfig(const QString& path)       override;
 
     // ── IDevice: возможности устройства ──────────────────────────────────────
     [[nodiscard]] QList<ChannelInfo> availableChannels() const override {

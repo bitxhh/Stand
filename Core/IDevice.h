@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QWidget>
+#include <cmath>
 #include <cstdint>
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,10 @@ public:
     [[nodiscard]] virtual QString name() const = 0;   // человекочитаемое название
 
     // ── Жизненный цикл ───────────────────────────────────────────────────────
-    virtual void init()          = 0;   // инициализация железа
+    // Инициализация железа. Если channels пуст — включаются все доступные RX.
+    // Иначе включаются только указанные каналы (TX0 всегда включается на
+    // железе с калибровочным лупбеком).
+    virtual void init(const QList<ChannelDescriptor>& channels = {}) = 0;
     virtual void calibrate(const QList<ChannelDescriptor>& channels = {}) {}  // опционально
     // Останавливает все стримы, закрывает хэндл и сбрасывает состояние в Connected.
     // Вызывается из UI-потока при закрытии DeviceDetailWindow.
@@ -120,6 +124,17 @@ public:
 
     // ── Состояние ─────────────────────────────────────────────────────────────
     [[nodiscard]] virtual DeviceState state() const = 0;
+
+    // ── Мониторинг ────────────────────────────────────────────────────────────
+    // Температура чипа в °C. NaN если не поддерживается или устройство не готово.
+    [[nodiscard]] virtual double temperature() const { return std::nan(""); }
+
+    // ── Persistence (chip register state) ────────────────────────────────────
+    // Сохранить/загрузить аппаратную конфигурацию (регистры чипа) в/из файла.
+    // Дефолт: no-op/false. LimeDevice проксирует в LMS_SaveConfig/LMS_LoadConfig.
+    // Вызывать после init() — иначе хэндл не готов.
+    virtual bool saveConfig(const QString& /*path*/) const { return false; }
+    virtual bool loadConfig(const QString& /*path*/)       { return false; }
 
     // ── Возможности устройства ────────────────────────────────────────────────
     // Возвращает список доступных каналов устройства.

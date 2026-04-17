@@ -8,9 +8,9 @@ DeviceController::DeviceController(std::shared_ptr<IDevice> device, QObject* par
     , device_(std::move(device))
 {}
 
-void DeviceController::initDevice() {
+void DeviceController::initDevice(const QList<ChannelDescriptor>& channels) {
     try {
-        device_->init();
+        device_->init(channels);
         emit deviceInitialized();
         emit sampleRateChanged(device_->sampleRate());
         emit statusChanged(

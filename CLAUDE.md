@@ -28,3 +28,7 @@ Use **Release** for FM listening — Debug uses 31-tap FIR1 and can't sustain �
 - FM/AM DSP chains and parameters → `docs/dsp.md`
 - LimeSDR init, hardware quirks, gain structure → `docs/hardware.md`
 - Load all docs in conversation → `/stand-docs`
+
+For all hardware questions, refer to the information at the link https://wiki.myriadrf.org/LimeMicro:LMS7002M_Datasheet#Data_converters_clock_generation
+
+For all LimeSuite questions, refer to the information at the link https://deepwiki.com/myriadrf/LimeSuite/1-limesuite-overview

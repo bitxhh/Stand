@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <QFile>
 #include <QScrollArea>
 #include <QSize>
 #include "../Core/ChannelDescriptor.h"
+#include "../Core/DeviceSettings.h"
 #include "TxController.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -17,6 +19,10 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     , controller_(new DeviceController(this->device, this))
 {
     setWindowTitle(this->device->id());
+
+    // ── Load persisted UI state (keyed by serial) BEFORE building widgets ────
+    // Chip-register state (.ini) is loaded later in onDeviceInitialized().
+    const DeviceSettings settings = DeviceSettings::load(this->device->id());
 
     connect(controller_, &DeviceController::deviceInitialized,
             this,        &DeviceDetailWindow::onDeviceInitialized);
@@ -41,7 +47,10 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
         cfg.displayName    = chInfo.displayName;
         cfg.freqMinMHz     = kFreqMinMHz;
         cfg.freqMaxMHz     = kFreqMaxMHz;
-        cfg.freqDefaultMHz = kFreqDefaultMHz;
+        const int chIdx = chInfo.descriptor.channelIndex;
+        cfg.freqDefaultMHz = (chIdx >= 0 && chIdx < 2)
+            ? settings.freqRxMHz[chIdx]
+            : kFreqDefaultMHz;
         auto* panel = new ChannelPanel(cfg, this->device.get(), controller_, this);
         auto* ctrl  = new RxController(this->device.get(), chInfo.descriptor, dspPool_, this);
         panel->setRxController(ctrl);
@@ -129,6 +138,54 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
                 if (txStopButton_)  txStopButton_->setEnabled(false);
             }, Qt::QueuedConnection);
 
+    // ── Apply saved UI state to widgets (after pages are built) ──────────────
+    // Sample rate — select closest item in combo
+    if (sampleRateSelector) {
+        QSignalBlocker blocker(sampleRateSelector);
+        for (int i = 0; i < sampleRateSelector->count(); ++i) {
+            if (std::abs(sampleRateSelector->itemData(i).toDouble() - settings.sampleRate) < 1.0) {
+                sampleRateSelector->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
+    if (channelCountSpin_) {
+        QSignalBlocker blocker(channelCountSpin_);
+        channelCountSpin_->setValue(std::clamp(settings.channelCount,
+            channelCountSpin_->minimum(), channelCountSpin_->maximum()));
+    }
+    if (channelAssignCombo_) {
+        QSignalBlocker blocker(channelAssignCombo_);
+        const int idx = channelAssignCombo_->findData(settings.channelAssign);
+        if (idx >= 0) channelAssignCombo_->setCurrentIndex(idx);
+    }
+    if (channelAssignRow_ && channelCountSpin_) {
+        QList<ChannelDescriptor> rxChannels;
+        for (const auto& info : this->device->availableChannels())
+            if (info.descriptor.direction == ChannelDescriptor::RX)
+                rxChannels.append(info.descriptor);
+        channelAssignRow_->setVisible(rxChannels.size() > 1 && channelCountSpin_->value() == 1);
+    }
+    for (int i = 0; i < gainSliders_.size() && i < 2; ++i) {
+        QSignalBlocker blocker(gainSliders_[i]);
+        const int v = std::clamp(static_cast<int>(settings.gainRx[i]),
+                                 gainSliders_[i]->minimum(),
+                                 gainSliders_[i]->maximum());
+        gainSliders_[i]->setValue(v);
+        if (i < gainValueLabels_.size())
+            gainValueLabels_[i]->setText(QString("%1 dB").arg(v));
+    }
+    if (txFreqSpin_)       txFreqSpin_->setValue(settings.txFreqMHz);
+    if (txGainSlider_) {
+        const int v = std::clamp(static_cast<int>(settings.txGainDb),
+                                 txGainSlider_->minimum(),
+                                 txGainSlider_->maximum());
+        txGainSlider_->setValue(v);
+        if (txGainLabel_) txGainLabel_->setText(QString("%1 dB").arg(v));
+    }
+    if (txToneOffsetSpin_) txToneOffsetSpin_->setValue(settings.txToneOffsetHz / 1000.0);
+    if (txAmplitudeSpin_)  txAmplitudeSpin_->setValue(settings.txAmplitude);
+
     // ── Plot render timer: max 20 fps, delegates to each ChannelPanel ─────────
     plotTimer_ = new QTimer(this);
     plotTimer_->setInterval(50);
@@ -137,6 +194,15 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
         for (auto* p : channelPanels_) p->replotIfDirty();
     });
     plotTimer_->start();
+
+    // ── Chip temperature indicator (bottom-right on all pages via status bar) ─
+    temperatureLabel_ = new QLabel("Temperature: — °C", this);
+    statusBar()->addPermanentWidget(temperatureLabel_);
+    temperatureTimer_ = new QTimer(this);
+    temperatureTimer_->setInterval(5000);
+    connect(temperatureTimer_, &QTimer::timeout, this, &DeviceDetailWindow::updateTemperature);
+    temperatureTimer_->start();
+    updateTemperature();
 
     // ── Connection watchdog ───────────────────────────────────────────────────
     connectionTimer = new QTimer(this);
@@ -147,6 +213,16 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
             this, &DeviceDetailWindow::handleConnectionCheckFinished);
     connectionTimer->start();
     checkDeviceConnection();
+}
+
+void DeviceDetailWindow::updateTemperature() {
+    if (!temperatureLabel_ || !device) return;
+    const double t = device->temperature();
+    if (std::isnan(t)) {
+        temperatureLabel_->setText("Temperature: — °C");
+    } else {
+        temperatureLabel_->setText(QString("Temperature: %1 °C").arg(t, 0, 'f', 1));
+    }
 }
 
 DeviceDetailWindow::~DeviceDetailWindow() {
@@ -160,8 +236,9 @@ void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
     // ── 1. Stop timers — prevent new watchdog/plot/metrics calls during teardown ──
     connectionTimer->stop();
     connectionWatcher.waitForFinished();
-    if (plotTimer_)    plotTimer_->stop();
-    if (metricsTimer_) metricsTimer_->stop();
+    if (plotTimer_)        plotTimer_->stop();
+    if (metricsTimer_)     metricsTimer_->stop();
+    if (temperatureTimer_) temperatureTimer_->stop();
 
     // ── 2. Synchronously stop all RX streams ─────────────────────────────────────
     // shutdown() calls teardownStream() which blocks until the worker thread exits
@@ -173,7 +250,34 @@ void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
     // ── 3. Synchronously stop TX ─────────────────────────────────────────────────
     if (txCtrl_) txCtrl_->shutdown();
 
-    // ── 4. Close hardware — tears down LMS handle, resets state to Connected ─────
+    // ── 4. Persist settings (JSON for UI state, .ini for chip registers) ────────
+    // Must run while the device handle is still open — LMS_SaveConfig needs it.
+    if (controller_ && controller_->isInitialized()) {
+        DeviceSettings s;
+        if (sampleRateSelector && sampleRateSelector->currentIndex() >= 0)
+            s.sampleRate = sampleRateSelector->currentData().toDouble();
+        else
+            s.sampleRate = device->sampleRate();
+        if (channelCountSpin_)   s.channelCount  = channelCountSpin_->value();
+        if (channelAssignCombo_) s.channelAssign = channelAssignCombo_->currentData().toInt();
+        for (int i = 0; i < gainSliders_.size() && i < 2; ++i)
+            s.gainRx[i] = gainSliders_[i]->value();
+        for (const auto& info : device->availableChannels()) {
+            if (info.descriptor.direction != ChannelDescriptor::RX) continue;
+            const int idx = info.descriptor.channelIndex;
+            if (idx >= 0 && idx < 2)
+                s.freqRxMHz[idx] = device->frequency(info.descriptor) / 1e6;
+        }
+        if (txFreqSpin_)       s.txFreqMHz      = txFreqSpin_->value();
+        if (txGainSlider_)     s.txGainDb       = txGainSlider_->value();
+        if (txToneOffsetSpin_) s.txToneOffsetHz = txToneOffsetSpin_->value() * 1000.0;
+        if (txAmplitudeSpin_)  s.txAmplitude    = txAmplitudeSpin_->value();
+
+        s.save(device->id());
+        device->saveConfig(DeviceSettings::iniPathFor(device->id()));
+    }
+
+    // ── 5. Close hardware — tears down LMS handle, resets state to Connected ─────
     // After this call the device is no longer initialised; reopening the same device
     // from DeviceSelectionWindow will show a fresh "not initialized" UI.
     device->close();
@@ -232,12 +336,96 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     sampleRateSelector->setEnabled(ready);
     calibrateButton->setEnabled(ready);
 
-    connect(initButton, &QPushButton::clicked,
-            controller_, &DeviceController::initDevice);
+    // ── Channel selection ─────────────────────────────────────────────────────
+    // Count RX channels available on the device.
+    QList<ChannelDescriptor> rxChannels;
+    for (const auto& info : device->availableChannels())
+        if (info.descriptor.direction == ChannelDescriptor::RX)
+            rxChannels.append(info.descriptor);
+    const int numRx = rxChannels.size();
+
+    auto* selectionRow  = new QWidget(page);
+    auto* selectionHlay = new QHBoxLayout(selectionRow);
+    selectionHlay->setContentsMargins(0, 0, 0, 0);
+    auto* countLbl = new QLabel("RX channels", selectionRow);
+    channelCountSpin_ = new QSpinBox(selectionRow);
+    channelCountSpin_->setRange(1, std::max(1, numRx));
+    channelCountSpin_->setValue(std::max(1, numRx));
+    channelCountSpin_->setEnabled(!ready);  // locked after init
+    selectionHlay->addWidget(countLbl);
+    selectionHlay->addWidget(channelCountSpin_);
+    selectionHlay->addStretch();
+
+    // Combo visible only if device has >1 RX AND user picks count==1 (which RX to use).
+    channelAssignRow_ = new QWidget(page);
+    auto* assignHlay = new QHBoxLayout(channelAssignRow_);
+    assignHlay->setContentsMargins(0, 0, 0, 0);
+    auto* assignLbl = new QLabel("Use channel", channelAssignRow_);
+    channelAssignCombo_ = new QComboBox(channelAssignRow_);
+    for (const auto& ch : rxChannels)
+        channelAssignCombo_->addItem(QString("RX%1").arg(ch.channelIndex), ch.channelIndex);
+    channelAssignCombo_->setEnabled(!ready);
+    assignHlay->addWidget(assignLbl);
+    assignHlay->addWidget(channelAssignCombo_);
+    assignHlay->addStretch();
+    channelAssignRow_->setVisible(numRx > 1 && channelCountSpin_->value() == 1);
+
+    connect(channelCountSpin_, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, [this, numRx](int v) {
+        if (channelAssignRow_)
+            channelAssignRow_->setVisible(numRx > 1 && v == 1);
+        updateChannelRowVisibility();
+    });
+
+    // ── Per-channel gain rows ─────────────────────────────────────────────────
+    gainSliders_.clear();
+    gainValueLabels_.clear();
+    gainRows_.clear();
+    auto* gainBox = new QWidget(page);
+    auto* gainBoxLay = new QVBoxLayout(gainBox);
+    gainBoxLay->setContentsMargins(0, 0, 0, 0);
+    gainBoxLay->setSpacing(4);
+    for (const auto& ch : rxChannels) {
+        auto* row = new QWidget(gainBox);
+        auto* hlay = new QHBoxLayout(row);
+        hlay->setContentsMargins(0, 0, 0, 0);
+        auto* lbl = new QLabel(QString("RX%1 gain").arg(ch.channelIndex), row);
+        lbl->setFixedWidth(80);
+        lbl->setToolTip("Total RX gain 0–68 dB.\n"
+                        "TIA fixed at 12 dB; LimeSuite distributes\n"
+                        "the remaining gain across LNA and PGA.");
+        auto* slider = new QSlider(Qt::Horizontal, row);
+        slider->setRange(0, 68);
+        slider->setValue(static_cast<int>(device->gain(ch)));
+        slider->setEnabled(ready);
+        slider->setToolTip(lbl->toolTip());
+        auto* valueLbl = new QLabel(QString("%1 dB").arg(slider->value()), row);
+        valueLbl->setFixedWidth(52);
+        hlay->addWidget(lbl);
+        hlay->addWidget(slider);
+        hlay->addWidget(valueLbl);
+
+        connect(slider, &QSlider::valueChanged, valueLbl, [valueLbl](int v) {
+            valueLbl->setText(QString("%1 dB").arg(v));
+        });
+        connect(slider, &QSlider::sliderReleased, this, [this, slider, ch]() {
+            controller_->setGainChannel(ch, slider->value());
+        });
+
+        gainSliders_.append(slider);
+        gainValueLabels_.append(valueLbl);
+        gainRows_.append(row);
+        gainBoxLay->addWidget(row);
+    }
+
+    connect(initButton, &QPushButton::clicked, this, [this]() {
+        controller_->initDevice(selectedChannels());
+    });
 
     connect(calibrateButton, &QPushButton::clicked, this, [this]() {
         stopAllStreams();
-        controller_->calibrate(sampleRateSelector->currentData().toDouble());
+        controller_->calibrate(sampleRateSelector->currentData().toDouble(),
+                               selectedChannels());
     });
 
     connect(sampleRateSelector, &QComboBox::currentIndexChanged, this, [this]() {
@@ -245,34 +433,6 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
             stopAllStreams();
             controller_->setSampleRate(sampleRateSelector->currentData().toDouble());
         }
-    });
-
-    // Single gain slider — LimeSuite distributes across LNA+PGA automatically.
-    // TIA is fixed at max (12 dB) in LimeDevice::init() via LMS_WriteParam.
-    auto* gainRow  = new QWidget(page);
-    auto* gainHlay = new QHBoxLayout(gainRow);
-    gainHlay->setContentsMargins(0, 0, 0, 0);
-    auto* gainLbl  = new QLabel("Gain", gainRow);
-    gainLbl->setFixedWidth(36);
-    gainLbl->setToolTip("Total RX gain 0–68 dB.\n"
-                        "TIA is fixed at 12 dB (max); LimeSuite distributes\n"
-                        "the remaining gain across LNA and PGA automatically.");
-    gainSlider_ = new QSlider(Qt::Horizontal, gainRow);
-    gainSlider_->setRange(0, 68);
-    gainSlider_->setValue(0);
-    gainSlider_->setEnabled(ready);
-    gainSlider_->setToolTip(gainLbl->toolTip());
-    gainValueLabel_ = new QLabel("0 dB", gainRow);
-    gainValueLabel_->setFixedWidth(52);
-    gainHlay->addWidget(gainLbl);
-    gainHlay->addWidget(gainSlider_);
-    gainHlay->addWidget(gainValueLabel_);
-
-    connect(gainSlider_, &QSlider::valueChanged, gainValueLabel_, [this](int v) {
-        gainValueLabel_->setText(QString("%1 dB").arg(v));
-    });
-    connect(gainSlider_, &QSlider::sliderReleased, this, [this]() {
-        controller_->setGain(gainSlider_->value());
     });
 
     layout->addWidget(title);
@@ -283,17 +443,58 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addWidget(new QLabel("Sample rate", page));
     layout->addWidget(sampleRateSelector);
     layout->addSpacing(12);
-    auto* gainLabel = new QLabel("Gain", page);
+    layout->addWidget(selectionRow);
+    layout->addWidget(channelAssignRow_);
+    layout->addSpacing(12);
+    auto* gainLabel = new QLabel("Gain (per channel)", page);
     auto* gainHint  = new QLabel("Recommended for FM: 30–50 dB", page);
     gainHint->setStyleSheet("color: gray; font-size: 10px;");
     layout->addWidget(gainLabel);
     layout->addWidget(gainHint);
-    layout->addWidget(gainRow);
+    layout->addWidget(gainBox);
     layout->addSpacing(12);
     layout->addWidget(initButton);
     layout->addWidget(calibrateButton);
     layout->addStretch();
+
+    updateChannelRowVisibility();
     return page;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+QList<ChannelDescriptor> DeviceDetailWindow::selectedChannels() const {
+    QList<ChannelDescriptor> result;
+    if (!channelCountSpin_) return result;
+
+    QList<ChannelDescriptor> rxChannels;
+    for (const auto& info : device->availableChannels())
+        if (info.descriptor.direction == ChannelDescriptor::RX)
+            rxChannels.append(info.descriptor);
+
+    const int count = channelCountSpin_->value();
+    if (count == 1 && rxChannels.size() > 1 && channelAssignCombo_) {
+        const int idx = channelAssignCombo_->currentData().toInt();
+        for (const auto& ch : rxChannels)
+            if (ch.channelIndex == idx) { result.append(ch); break; }
+    } else {
+        for (int i = 0; i < count && i < rxChannels.size(); ++i)
+            result.append(rxChannels[i]);
+    }
+    return result;
+}
+
+void DeviceDetailWindow::updateChannelRowVisibility() {
+    // Grey out gain rows that aren't in the current selection so the user
+    // sees which channels the chosen count covers.
+    const auto sel = selectedChannels();
+    QList<ChannelDescriptor> rxChannels;
+    for (const auto& info : device->availableChannels())
+        if (info.descriptor.direction == ChannelDescriptor::RX)
+            rxChannels.append(info.descriptor);
+    for (int i = 0; i < gainRows_.size() && i < rxChannels.size(); ++i) {
+        const bool active = sel.contains(rxChannels[i]);
+        gainRows_[i]->setEnabled(active && controller_->isInitialized());
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,11 +701,19 @@ void DeviceDetailWindow::onDeviceInitialized() {
 
     sampleRateSelector->setEnabled(true);
     calibrateButton->setEnabled(true);
-    gainSlider_->setEnabled(true);
+    if (channelCountSpin_)   channelCountSpin_->setEnabled(false);
+    if (channelAssignCombo_) channelAssignCombo_->setEnabled(false);
+    for (auto* s : gainSliders_) s->setEnabled(true);
+    updateChannelRowVisibility();
     streamStartButton->setEnabled(true);
     if (txStartButton_) txStartButton_->setEnabled(true);
 
     refreshCurrentSampleRate();
+
+    // Restore chip register state from LimeSuite .ini (written on last close).
+    const QString ini = DeviceSettings::iniPathFor(device->id());
+    if (QFile::exists(ini)) device->loadConfig(ini);
+
     QMessageBox::information(this, "Initialization", "Device initialized successfully.");
 }
 

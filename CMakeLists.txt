@@ -64,6 +64,9 @@ add_executable(Stand
         Application/ChannelPanel.cpp
         Application/ChannelPanel.h
 
+        Application/CombinedRxController.cpp
+        Application/CombinedRxController.h
+
         DSP/ClassifierHandler.cpp
         DSP/ClassifierHandler.h
 
@@ -107,12 +110,16 @@ add_executable(Stand
         DSP/DemodRegistry.h
         DSP/RawFileHandler.cpp
         DSP/RawFileHandler.h
+        DSP/IqCombiner.cpp
+        DSP/IqCombiner.h
         DSP/ToneGenerator.cpp
         DSP/ToneGenerator.h
 
         Audio/FmAudioOutput.cpp
         Audio/FmAudioOutput.h
 
+        Core/DeviceSettings.cpp
+        Core/DeviceSettings.h
         Core/IDevice.h
         Core/IDeviceManager.h
         Core/IPipelineHandler.h
@@ -184,12 +191,15 @@ add_executable(StandTests
         Tests/test_fmdemod.cpp
         Tests/test_amdemod.cpp
         Tests/test_fftprocessor.cpp
+        Tests/test_iqcombiner.cpp
 
         DSP/DspUtils.cpp
         DSP/BaseDemodulator.cpp
         DSP/FmDemodulator.cpp
         DSP/AmDemodulator.cpp
         DSP/FftProcessor.cpp
+        DSP/IqCombiner.cpp
+        Core/Pipeline.cpp
         Core/Logger.cpp
 )
 
@@ -205,6 +215,7 @@ target_link_libraries(StandTests
         PRIVATE
         Catch2::Catch2WithMain
         Qt6::Core
+        Qt6::Concurrent
         "${FFTW_LIB_DIR}/libfftw3f-3.dll.a"
 )
 

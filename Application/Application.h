@@ -15,7 +15,9 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSlider>
+#include <QSpinBox>
 #include <QSplitter>
+#include <QStatusBar>
 #include <QStackedWidget>
 #include <QThreadPool>
 #include <QTimer>
@@ -87,8 +89,19 @@ private:
     QLabel*      controlStatusLabel{nullptr};
     QComboBox*   sampleRateSelector{nullptr};
     QPushButton* calibrateButton{nullptr};
-    QSlider*     gainSlider_{nullptr};
-    QLabel*      gainValueLabel_{nullptr};
+    // Channel selection (RX count + optional single-channel assignment)
+    QSpinBox*   channelCountSpin_{nullptr};
+    QComboBox*  channelAssignCombo_{nullptr};   // visible only when count==1 && numRx>1
+    QWidget*    channelAssignRow_{nullptr};
+
+    // Per-RX-channel gain sliders, indexed by RX channel index.
+    QVector<QSlider*> gainSliders_;
+    QVector<QLabel*>  gainValueLabels_;
+    QVector<QWidget*> gainRows_;                // whole row widget for show/hide
+
+    // Helper — builds the list of ChannelDescriptors currently selected in UI.
+    [[nodiscard]] QList<ChannelDescriptor> selectedChannels() const;
+    void updateChannelRowVisibility();
 
     // ── FFT page — stream controls ────────────────────────────────────────────
     QPushButton* streamStartButton{nullptr};
@@ -106,6 +119,11 @@ private:
 
     // ── Metrics timer (delegates to each ChannelPanel::updateMetrics()) ───────
     QTimer* metricsTimer_{nullptr};
+
+    // ── Chip temperature indicator in status bar ─────────────────────────────
+    QLabel* temperatureLabel_{nullptr};
+    QTimer* temperatureTimer_{nullptr};
+    void    updateTemperature();
 
     // ── TX page ───────────────────────────────────────────────────────────────
     QWidget*        txPage_{nullptr};

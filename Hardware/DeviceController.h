@@ -26,7 +26,8 @@ public:
     }
 
 public slots:
-    void initDevice();
+    // channels empty = все доступные RX (обратная совместимость).
+    void initDevice(const QList<ChannelDescriptor>& channels = {});
     void calibrate(double sampleRateHz, const QList<ChannelDescriptor>& channels = {});
 
     void setSampleRate(double sampleRateHz);
