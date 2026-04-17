@@ -7,6 +7,7 @@
 #include <QSize>
 #include "../Core/ChannelDescriptor.h"
 #include "../Core/DeviceSettings.h"
+#include "RadioMonitorPage.h"
 #include "TxController.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -33,33 +34,11 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     connect(controller_, &DeviceController::errorOccurred,
             this,        &DeviceDetailWindow::onControllerError);
 
-    // ── DSP thread pool — one per DeviceDetailWindow, shared across all RX pipelines.
+    // ── DSP thread pool — one per DeviceDetailWindow, shared with the
+    // combined pipeline managed by RadioMonitorPage.
     // maxThreadCount left at default (QThread::idealThreadCount()) so the pool
     // scales automatically to the machine's core count.
     dspPool_ = new QThreadPool(this);
-
-    // ── Create one ChannelPanel per RX channel reported by the device ────────
-    for (const auto& chInfo : this->device->availableChannels()) {
-        if (chInfo.descriptor.direction != ChannelDescriptor::RX)
-            continue;
-        ChannelPanel::Config cfg;
-        cfg.channel        = chInfo.descriptor;
-        cfg.displayName    = chInfo.displayName;
-        cfg.freqMinMHz     = kFreqMinMHz;
-        cfg.freqMaxMHz     = kFreqMaxMHz;
-        const int chIdx = chInfo.descriptor.channelIndex;
-        cfg.freqDefaultMHz = (chIdx >= 0 && chIdx < 2)
-            ? settings.freqRxMHz[chIdx]
-            : kFreqDefaultMHz;
-        auto* panel = new ChannelPanel(cfg, this->device.get(), controller_, this);
-        auto* ctrl  = new RxController(this->device.get(), chInfo.descriptor, dspPool_, this);
-        panel->setRxController(ctrl);
-        connect(ctrl, &RxController::streamError,
-                this, &DeviceDetailWindow::onStreamError,    Qt::QueuedConnection);
-        connect(ctrl, &RxController::streamFinished,
-                this, &DeviceDetailWindow::onStreamFinished, Qt::QueuedConnection);
-        channelPanels_.append(panel);
-    }
 
     // ── Build UI ──────────────────────────────────────────────────────────────
     auto* central    = new QWidget(this);
@@ -72,13 +51,13 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     functionList->setSelectionMode(QAbstractItemView::SingleSelection);
     functionList->setSpacing(4);
 
-    auto* infoItem    = new QListWidgetItem("Device info",    functionList);
-    auto* controlItem = new QListWidgetItem("Device control", functionList);
-    auto* fftItem     = new QListWidgetItem("FFT",            functionList);
-    auto* txNavItem   = new QListWidgetItem("Transmit",       functionList);
+    auto* infoItem    = new QListWidgetItem("Device info",     functionList);
+    auto* controlItem = new QListWidgetItem("Device control",  functionList);
+    auto* monitorItem = new QListWidgetItem("Радиомониторинг", functionList);
+    auto* txNavItem   = new QListWidgetItem("Transmit",        functionList);
     infoItem->setSizeHint(QSize(0, 48));
     controlItem->setSizeHint(QSize(0, 48));
-    fftItem->setSizeHint(QSize(0, 48));
+    monitorItem->setSizeHint(QSize(0, 48));
     txNavItem->setSizeHint(QSize(0, 48));
 
     contentStack = new QStackedWidget(central);
@@ -86,18 +65,18 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
 
     deviceInfoPage    = createDeviceInfoPage();
     deviceControlPage = createDeviceControlPage();
-    deviceFFTpage     = createDeviceFFTpage();   // uses channelPanels_
+    QWidget* radioPage = createRadioMonitorPage();   // builds radioMonitorPage_
     txPage_           = createTxPage();
     contentStack->addWidget(deviceInfoPage);
     contentStack->addWidget(deviceControlPage);
-    contentStack->addWidget(deviceFFTpage);
+    contentStack->addWidget(radioPage);
     contentStack->addWidget(txPage_);
 
     connect(functionList, &QListWidget::itemClicked, this,
-        [this, infoItem, controlItem, fftItem, txNavItem](QListWidgetItem* item) {
+        [this, infoItem, controlItem, monitorItem, txNavItem, radioPage](QListWidgetItem* item) {
             if      (item == infoItem)    contentStack->setCurrentWidget(deviceInfoPage);
             else if (item == controlItem) contentStack->setCurrentWidget(deviceControlPage);
-            else if (item == fftItem)     contentStack->setCurrentWidget(deviceFFTpage);
+            else if (item == monitorItem) contentStack->setCurrentWidget(radioPage);
             else if (item == txNavItem)   contentStack->setCurrentWidget(txPage_);
         });
 
@@ -186,12 +165,12 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     if (txToneOffsetSpin_) txToneOffsetSpin_->setValue(settings.txToneOffsetHz / 1000.0);
     if (txAmplitudeSpin_)  txAmplitudeSpin_->setValue(settings.txAmplitude);
 
-    // ── Plot render timer: max 20 fps, delegates to each ChannelPanel ─────────
+    // ── Plot render timer: max 20 fps, delegates to RadioMonitorPage ─────────
     plotTimer_ = new QTimer(this);
     plotTimer_->setInterval(50);
     plotTimer_->setTimerType(Qt::CoarseTimer);
     connect(plotTimer_, &QTimer::timeout, this, [this]() {
-        for (auto* p : channelPanels_) p->replotIfDirty();
+        if (radioMonitorPage_) radioMonitorPage_->replotIfDirty();
     });
     plotTimer_->start();
 
@@ -240,12 +219,10 @@ void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
     if (metricsTimer_)     metricsTimer_->stop();
     if (temperatureTimer_) temperatureTimer_->stop();
 
-    // ── 2. Synchronously stop all RX streams ─────────────────────────────────────
-    // shutdown() calls teardownStream() which blocks until the worker thread exits
-    // (up to 3 s). Must happen before device->close() / LMS_Close().
-    for (auto* p : channelPanels_)
-        if (auto* ctrl = p->appController())
-            ctrl->shutdown();
+    // ── 2. Synchronously stop RX stream ──────────────────────────────────────────
+    // shutdown() blocks until worker threads exit (up to 3 s).
+    // Must happen before device->close() / LMS_Close().
+    if (radioMonitorPage_) radioMonitorPage_->shutdown();
 
     // ── 3. Synchronously stop TX ─────────────────────────────────────────────────
     if (txCtrl_) txCtrl_->shutdown();
@@ -262,12 +239,11 @@ void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
         if (channelAssignCombo_) s.channelAssign = channelAssignCombo_->currentData().toInt();
         for (int i = 0; i < gainSliders_.size() && i < 2; ++i)
             s.gainRx[i] = gainSliders_[i]->value();
-        for (const auto& info : device->availableChannels()) {
-            if (info.descriptor.direction != ChannelDescriptor::RX) continue;
-            const int idx = info.descriptor.channelIndex;
-            if (idx >= 0 && idx < 2)
-                s.freqRxMHz[idx] = device->frequency(info.descriptor) / 1e6;
-        }
+        // Unified center frequency — apply to all persisted RX slots.
+        const double mhz = radioMonitorPage_
+                           ? radioMonitorPage_->centerFreqMHz()
+                           : device->frequency() / 1e6;
+        for (int i = 0; i < 2; ++i) s.freqRxMHz[i] = mhz;
         if (txFreqSpin_)       s.txFreqMHz      = txFreqSpin_->value();
         if (txGainSlider_)     s.txGainDb       = txGainSlider_->value();
         if (txToneOffsetSpin_) s.txToneOffsetHz = txToneOffsetSpin_->value() * 1000.0;
@@ -410,6 +386,13 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
         });
         connect(slider, &QSlider::sliderReleased, this, [this, slider, ch]() {
             controller_->setGainChannel(ch, slider->value());
+            // Update the combiner's per-channel normalisation so the combined
+            // I/Q stays level-balanced after a gain change mid-stream.
+            if (radioMonitorPage_) {
+                QVector<double> gains;
+                for (auto* s : gainSliders_) gains.append(s->value());
+                radioMonitorPage_->setChannelGains(gains);
+            }
         });
 
         gainSliders_.append(slider);
@@ -498,53 +481,40 @@ void DeviceDetailWindow::updateChannelRowVisibility() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-QWidget* DeviceDetailWindow::createDeviceFFTpage() {
-    auto* page   = new QWidget(this);
-    auto* layout = new QVBoxLayout(page);
+QWidget* DeviceDetailWindow::createRadioMonitorPage() {
+    radioMonitorPage_ = new RadioMonitorPage(device.get(), controller_, dspPool_, this);
 
-    auto* title = new QLabel("FFT", page);
-    title->setStyleSheet("font-weight: 600; font-size: 16px;");
+    // Seed the page with the channels the user selected on the control page.
+    // DeviceDetailWindow is the source of truth for active channels; the page
+    // is updated again after init (onDeviceInitialized) to reflect the final
+    // channel selection baked into the hardware.
+    radioMonitorPage_->setActiveChannels(selectedChannels());
 
-    // ── Per-channel panels in a scroll area ───────────────────────────────────
-    auto* scroll = new QScrollArea(page);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
+    // Propagate stream events to window-level housekeeping
+    // (connection watchdog, metrics timer, calibrate button).
+    connect(radioMonitorPage_, &RadioMonitorPage::streamStarted, this, [this]() {
+        // LMS_GetDeviceList (watchdog) interferes with USB during streaming.
+        connectionTimer->stop();
+        if (calibrateButton) calibrateButton->setEnabled(false);
+        if (!metricsTimer_) {
+            metricsTimer_ = new QTimer(this);
+            connect(metricsTimer_, &QTimer::timeout, this, [this]() {
+                if (radioMonitorPage_) radioMonitorPage_->updateMetrics();
+            });
+        }
+        metricsTimer_->start(500);
+    });
+    connect(radioMonitorPage_, &RadioMonitorPage::streamStopped, this, [this]() {
+        if (metricsTimer_) metricsTimer_->stop();
+        if (calibrateButton) calibrateButton->setEnabled(controller_->isInitialized());
+        connectionTimer->start();
+    });
+    connect(radioMonitorPage_, &RadioMonitorPage::errorOccurred, this,
+            [this](const QString& err) {
+                QMessageBox::warning(this, "Stream error", err);
+            });
 
-    auto* panelsWidget = new QWidget(scroll);
-    auto* panelsLayout = new QVBoxLayout(panelsWidget);
-    panelsLayout->setContentsMargins(0, 0, 0, 0);
-    panelsLayout->setSpacing(8);
-    for (auto* panel : channelPanels_)
-        panelsLayout->addWidget(panel);
-    panelsLayout->addStretch();
-    scroll->setWidget(panelsWidget);
-
-    // ── Stream start / stop ───────────────────────────────────────────────────
-    auto* btnRow  = new QWidget(page);
-    auto* btnHlay = new QHBoxLayout(btnRow);
-    btnHlay->setContentsMargins(0, 0, 0, 0);
-
-    streamStartButton = new QPushButton("\u25B6  Start", btnRow);
-    streamStopButton  = new QPushButton("\u25A0  Stop",  btnRow);
-    streamStopButton->setEnabled(false);
-    streamStartButton->setEnabled(controller_->isInitialized());
-
-    connect(streamStartButton, &QPushButton::clicked, this, &DeviceDetailWindow::startStream);
-    connect(streamStopButton,  &QPushButton::clicked, this, &DeviceDetailWindow::stopStream);
-
-    btnHlay->addWidget(streamStartButton);
-    btnHlay->addWidget(streamStopButton);
-    btnHlay->addStretch();
-
-    streamStatusLabel = new QLabel("Idle", page);
-    streamStatusLabel->setStyleSheet("color: gray;");
-
-    layout->addWidget(title);
-    layout->addSpacing(4);
-    layout->addWidget(scroll, 1);
-    layout->addWidget(btnRow);
-    layout->addWidget(streamStatusLabel);
-    return page;
+    return radioMonitorPage_;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -705,8 +675,17 @@ void DeviceDetailWindow::onDeviceInitialized() {
     if (channelAssignCombo_) channelAssignCombo_->setEnabled(false);
     for (auto* s : gainSliders_) s->setEnabled(true);
     updateChannelRowVisibility();
-    streamStartButton->setEnabled(true);
     if (txStartButton_) txStartButton_->setEnabled(true);
+
+    // Hand the finalized channel selection and gains to the radio monitor page
+    // so it can start the combined stream correctly.
+    if (radioMonitorPage_) {
+        radioMonitorPage_->setActiveChannels(selectedChannels());
+        QVector<double> gains;
+        for (auto* s : gainSliders_) gains.append(s->value());
+        radioMonitorPage_->setChannelGains(gains);
+        radioMonitorPage_->onDeviceReady();
+    }
 
     refreshCurrentSampleRate();
 
@@ -745,87 +724,6 @@ void DeviceDetailWindow::onControllerError(const QString& message) {
     QMessageBox::critical(this, "Device error", message);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Stream control
-// ═══════════════════════════════════════════════════════════════════════════════
-void DeviceDetailWindow::startStream() {
-    // Don't restart if any channel is already streaming
-    if (std::ranges::any_of(channelPanels_,
-            [](auto* p) { return p->appController()->isStreaming(); })) return;
-
-    // Pre-prepare streams from UI thread (LimeSuite quirk):
-    // LMS_SetupStream stops ALL device streams — must be called from UI thread
-    // before any workers start, so workers skip setup and just call LMS_StartStream.
-    for (auto* p : channelPanels_)
-        device->prepareStream(p->channel());
-
-    // Start each channel
-    for (auto* p : channelPanels_) {
-        p->appController()->startStream(p->buildStreamConfig());
-        p->onStreamStarted();
-    }
-
-    // Forward first channel's stream status to the status label
-    if (!channelPanels_.isEmpty())
-        connect(channelPanels_.first()->appController(), &RxController::streamStatus,
-                streamStatusLabel, &QLabel::setText, Qt::QueuedConnection);
-
-    // LMS_GetDeviceList (called by watchdog) causes USB interference during streaming.
-    connectionTimer->stop();
-
-    // Lazily create metrics timer; connect to each panel's updateMetrics()
-    if (!metricsTimer_) {
-        metricsTimer_ = new QTimer(this);
-        connect(metricsTimer_, &QTimer::timeout, this, [this]() {
-            for (auto* p : channelPanels_) p->updateMetrics();
-        });
-    }
-    metricsTimer_->start(500);
-
-    calibrateButton->setEnabled(false);
-    streamStartButton->setEnabled(false);
-    streamStopButton->setEnabled(true);
-    streamStatusLabel->setStyleSheet("color: #00cc44;");
-    streamStatusLabel->setText("Streaming\u2026");
-}
-
-void DeviceDetailWindow::stopStream() {
-    for (auto* p : channelPanels_)
-        if (p->appController()->isStreaming())
-            p->appController()->stopStream();
-    streamStopButton->setEnabled(false);
-}
-
-void DeviceDetailWindow::onStreamError(const QString& error) {
-    streamStatusLabel->setStyleSheet("color: #ff4444;");
-    streamStatusLabel->setText("Error: " + error);
-    QMessageBox::warning(this, "Stream error", error);
-}
-
-void DeviceDetailWindow::onStreamFinished() {
-    // Called from each channel's RxController via QueuedConnection.
-    // Allow restart only when ALL channels have finished.
-    if (std::ranges::any_of(channelPanels_,
-            [](auto* p) { return p->appController()->isStreaming(); })) return;
-
-    if (metricsTimer_) metricsTimer_->stop();
-
-    // Disconnect streamStatus so stale connection doesn't persist across streams
-    if (!channelPanels_.isEmpty())
-        disconnect(channelPanels_.first()->appController(),
-                   &RxController::streamStatus, streamStatusLabel, nullptr);
-
-    for (auto* p : channelPanels_) p->onStreamStopped();
-
-    calibrateButton->setEnabled(controller_->isInitialized());
-    streamStartButton->setEnabled(controller_->isInitialized());
-    streamStopButton->setEnabled(false);
-    streamStatusLabel->setStyleSheet("color: gray;");
-    streamStatusLabel->setText("Idle");
-
-    // Resume connection watchdog now that streaming has stopped.
-    connectionTimer->start();
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -885,9 +783,8 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
 // RXTX coordination helper
 // ═══════════════════════════════════════════════════════════════════════════════
 void DeviceDetailWindow::stopAllStreams() {
-    for (auto* p : channelPanels_)
-        if (p->appController()->isStreaming())
-            p->appController()->stopStream();
+    if (radioMonitorPage_ && radioMonitorPage_->isStreaming())
+        radioMonitorPage_->shutdown();
     if (txCtrl_->isTransmitting()) txCtrl_->stopTx();
 }
 

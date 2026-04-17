@@ -21,11 +21,13 @@ public:
     void attachToController(CombinedRxController* ctrl);
     void detachFromController();
 
+    void onStreamStarted();
     void onStreamStopped();
     void updateMetrics();
 
     void setCenterFreqMHz(double mhz);
     void setSampleRateHz(double sr);
+    void tuneToMHz(double mhz);
     [[nodiscard]] double vfoFreqMHz() const;
     [[nodiscard]] int slotIndex() const { return slotIndex_; }
     [[nodiscard]] QString currentMode() const;

@@ -63,6 +63,10 @@ add_executable(Stand
         Application/ClassifierController.h
         Application/ChannelPanel.cpp
         Application/ChannelPanel.h
+        Application/DemodulatorPanel.cpp
+        Application/DemodulatorPanel.h
+        Application/RadioMonitorPage.cpp
+        Application/RadioMonitorPage.h
 
         Application/CombinedRxController.cpp
         Application/CombinedRxController.h
