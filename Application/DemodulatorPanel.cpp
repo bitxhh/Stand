@@ -501,6 +501,71 @@ void DemodulatorPanel::onStreamStopped() {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+DemodPanelSettings DemodulatorPanel::state() const {
+    DemodPanelSettings s;
+    if (modeCombo_) {
+        const int idx = modeCombo_->currentIndex();
+        s.mode = (idx == 1) ? QStringLiteral("FM")
+               : (idx == 2) ? QStringLiteral("AM")
+               :              QStringLiteral("Off");
+    }
+    if (vfoSpin_)        s.vfoMHz      = vfoSpin_->value();
+    if (fmBwSpin_)       s.fmBwKHz     = fmBwSpin_->value();
+    if (fmDeemphCombo_)  s.fmDeemphSec = fmDeemphCombo_->currentData().toDouble();
+    if (amBwSpin_)       s.amBwKHz     = amBwSpin_->value();
+    if (volumeSlider_)   s.volumePct   = volumeSlider_->value();
+    if (filteredCheck_)  s.recordFiltered = filteredCheck_->isChecked();
+    if (audioCheck_)     s.recordAudio    = audioCheck_->isChecked();
+    return s;
+}
+
+void DemodulatorPanel::applyState(const DemodPanelSettings& s) {
+    // Populate all widget values *before* activating the mode — onModeChanged
+    // reads fmBw/amBw/deemph to push into the handler via applyDemod when a
+    // stream is already live. At restore time (pre-start) this is moot, but
+    // the order is correct either way.
+    if (vfoSpin_) {
+        QSignalBlocker b(vfoSpin_);
+        // Range may be narrower than the saved value until setSampleRateHz()
+        // is called with the real SR; clamp silently here, the page widens
+        // the range later.
+        const double lo = vfoSpin_->minimum();
+        const double hi = vfoSpin_->maximum();
+        vfoSpin_->setValue(std::clamp(s.vfoMHz, lo, hi));
+    }
+    if (fmBwSpin_) { QSignalBlocker b(fmBwSpin_); fmBwSpin_->setValue(s.fmBwKHz); }
+    if (amBwSpin_) { QSignalBlocker b(amBwSpin_); amBwSpin_->setValue(s.amBwKHz); }
+    if (fmDeemphCombo_) {
+        const int di = fmDeemphCombo_->findData(s.fmDeemphSec);
+        if (di >= 0) {
+            QSignalBlocker b(fmDeemphCombo_);
+            fmDeemphCombo_->setCurrentIndex(di);
+        }
+    }
+    if (volumeSlider_) {
+        QSignalBlocker b(volumeSlider_);
+        volumeSlider_->setValue(std::clamp(s.volumePct,
+            volumeSlider_->minimum(), volumeSlider_->maximum()));
+    }
+    volume_ = static_cast<float>(s.volumePct) / 100.0f;
+    if (volumeLabel_) volumeLabel_->setText(QString("%1%").arg(s.volumePct));
+
+    if (filteredCheck_) { QSignalBlocker b(filteredCheck_); filteredCheck_->setChecked(s.recordFiltered); }
+    if (audioCheck_)    { QSignalBlocker b(audioCheck_);    audioCheck_->setChecked(s.recordAudio); }
+
+    // Finally select the mode — let onModeChanged run so visibility and VFO
+    // enable-state match the restored mode.
+    if (modeCombo_) {
+        const int idx = (s.mode == QStringLiteral("FM")) ? 1
+                      : (s.mode == QStringLiteral("AM")) ? 2
+                      :                                    0;
+        modeCombo_->setCurrentIndex(idx);
+    }
+}
+
+// ---------------------------------------------------------------------------
 void DemodulatorPanel::updateMetrics() {
     if (!levelLabel_ || !demodHandler_) return;
 

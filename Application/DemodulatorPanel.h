@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Core/DeviceSettings.h"
+
 #include <QWidget>
 #include <QString>
 
@@ -50,6 +52,10 @@ public:
                              double         centerFreqHz,
                              bool           filteredAllowed,
                              bool           audioAllowed);
+
+    // Persistence — mode/VFO/BW/volume/recording checkbox state.
+    [[nodiscard]] DemodPanelSettings state() const;
+    void applyState(const DemodPanelSettings& s);
 
 signals:
     void removeRequested(int slotIndex);

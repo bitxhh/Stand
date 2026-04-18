@@ -165,6 +165,10 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     if (txToneOffsetSpin_) txToneOffsetSpin_->setValue(settings.txToneOffsetHz / 1000.0);
     if (txAmplitudeSpin_)  txAmplitudeSpin_->setValue(settings.txAmplitude);
 
+    // Restore demodulator panels (mode / VFO / BW / volume / recording flags).
+    if (radioMonitorPage_ && !settings.demodPanels.isEmpty())
+        radioMonitorPage_->restoreDemodPanels(settings.demodPanels);
+
     // ── Plot render timer: max 20 fps, delegates to RadioMonitorPage ─────────
     plotTimer_ = new QTimer(this);
     plotTimer_->setInterval(50);
@@ -248,6 +252,8 @@ void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
         if (txGainSlider_)     s.txGainDb       = txGainSlider_->value();
         if (txToneOffsetSpin_) s.txToneOffsetHz = txToneOffsetSpin_->value() * 1000.0;
         if (txAmplitudeSpin_)  s.txAmplitude    = txAmplitudeSpin_->value();
+
+        if (radioMonitorPage_) s.demodPanels = radioMonitorPage_->demodPanelStates();
 
         s.save(device->id());
         device->saveConfig(DeviceSettings::iniPathFor(device->id()));

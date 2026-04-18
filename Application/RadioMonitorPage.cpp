@@ -501,6 +501,29 @@ void RadioMonitorPage::removeDemodulator(int slotIndex) {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence — collect/restore DemodulatorPanel state.
+// ---------------------------------------------------------------------------
+QList<DemodPanelSettings> RadioMonitorPage::demodPanelStates() const {
+    QList<DemodPanelSettings> out;
+    out.reserve(panels_.size());
+    for (const auto* p : panels_) out.append(p->state());
+    return out;
+}
+
+void RadioMonitorPage::restoreDemodPanels(const QList<DemodPanelSettings>& panels) {
+    // Called once at window construction, before any stream is started.
+    // Skip if anything was already added manually.
+    if (!panels_.isEmpty()) return;
+
+    const int n = std::min(static_cast<int>(panels.size()), kMaxDemods);
+    for (int i = 0; i < n; ++i) {
+        addDemodulator();
+        if (i < panels_.size()) panels_[i]->applyState(panels[i]);
+    }
+    updateFilterBands();
+}
+
+// ---------------------------------------------------------------------------
 void RadioMonitorPage::updateFilterBands() {
     if (!fftPlot_) return;
 
