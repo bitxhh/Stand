@@ -34,7 +34,7 @@ void CombinedRxController::startStream(const StreamConfig& cfg) {
             this, &CombinedRxController::fftReady, Qt::QueuedConnection);
 
     if (cfg.recordRaw) {
-        auto* h = new RawFileHandler(cfg.rawPath);
+        auto* h = new RawFileHandler(cfg.rawPath, cfg.rawFormat);
         combinedPipeline_->addHandler(h);
         rawHandlers_.push_back(h);
     }
@@ -69,6 +69,17 @@ void CombinedRxController::startStream(const StreamConfig& cfg) {
 
         w.prePipeline = new Pipeline(nullptr, this);
         w.prePipeline->addHandler(combiner_);
+
+        if (i < cfg.rawPerChannelPaths.size()
+            && !cfg.rawPerChannelPaths[i].isEmpty()) {
+            w.perChannelRaw = new RawFileHandler(cfg.rawPerChannelPaths[i],
+                                                 cfg.rawFormat);
+            w.prePipeline->addHandler(w.perChannelRaw);
+        }
+
+        // Fire onStreamStarted for every handler on this prePipeline (opens
+        // per-channel RawFileHandler, etc.). IqCombiner's hook is idempotent.
+        w.prePipeline->notifyStarted(device_->sampleRate());
 
         w.thread = new QThread(this);
         w.worker = new RxWorker(device_, w.prePipeline, w.channel);
@@ -157,11 +168,20 @@ void CombinedRxController::addExtraHandler(IPipelineHandler* h) {
     if (!h || !combinedPipeline_) return;
     combinedPipeline_->addHandler(h);
     extraHandlers_.push_back(h);
+    // Handlers added mid-stream need their onStreamStarted fired explicitly
+    // (Pipeline::notifyStarted has already run). BaseDemodHandler handles this
+    // lazily in processBlock, but BandpassHandler and RawFileHandler rely on
+    // onStreamStarted to open their output files.
+    if (device_ && !workers_.empty())
+        h->onStreamStarted(device_->sampleRate());
 }
 
 void CombinedRxController::removeExtraHandler(IPipelineHandler* h) {
     if (!h) return;
     if (combinedPipeline_) combinedPipeline_->removeHandler(h);
+    // Pair with addExtraHandler's onStreamStarted so handlers can flush files.
+    if (!workers_.empty())
+        h->onStreamStopped();
     extraHandlers_.erase(
         std::remove(extraHandlers_.begin(), extraHandlers_.end(), h),
         extraHandlers_.end());
@@ -222,10 +242,13 @@ void CombinedRxController::performCleanup() {
             }
         }
         if (w.prePipeline) {
+            w.prePipeline->notifyStopped();
             w.prePipeline->clearHandlers();
             delete w.prePipeline;
             w.prePipeline = nullptr;
         }
+        delete w.perChannelRaw;
+        w.perChannelRaw = nullptr;
     }
     workers_.clear();
 

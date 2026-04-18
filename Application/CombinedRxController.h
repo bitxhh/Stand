@@ -2,6 +2,7 @@
 
 #include "../Core/ChannelDescriptor.h"
 #include "../Core/Pipeline.h"
+#include "../Core/RecordingSettings.h"
 #include "../DSP/FftHandler.h"
 #include "../DSP/BaseDemodHandler.h"
 #include "../DSP/RawFileHandler.h"
@@ -39,8 +40,18 @@ public:
         double  loFreqMHz{102.0};
         QList<ChannelDescriptor> channels;   // e.g. [{RX,0}, {RX,1}]
         QList<double>            gainsDb;    // per-channel gain in dB
+
+        // Combined I/Q capture (after IqCombiner).
         bool    recordRaw{false};
         QString rawPath;
+
+        // Per-channel I/Q capture (before IqCombiner). Index matches `channels`.
+        // Empty list or empty entries skip the corresponding channel.
+        QList<QString> rawPerChannelPaths;
+
+        // Shared sample format for both combined and per-channel raw captures.
+        RecordingSettings::RawFormat rawFormat{RecordingSettings::RawFormat::Float32};
+
         bool    exportWav{false};
         QString wavPath;
         double  wavOffset{0.0};
@@ -88,6 +99,7 @@ private:
         Pipeline*         prePipeline{nullptr};
         QThread*          thread{nullptr};
         RxWorker*         worker{nullptr};
+        RawFileHandler*   perChannelRaw{nullptr};   // owned here, nullptr if disabled
     };
 
     void teardownStream();
