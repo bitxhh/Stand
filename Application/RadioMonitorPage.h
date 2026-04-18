@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Core/ChannelDescriptor.h"
+#include "../Core/RecordingSettings.h"
 #include "../DSP/FftProcessor.h"
 
 #include <QWidget>
@@ -80,11 +81,17 @@ private slots:
 
     void addDemodulator();
     void removeDemodulator(int slotIndex);
+    void openRecordingSettings();
 
 private:
     void buildUi();
     void setupFftPlot();
     void updateFilterBands();
+    void pushRecordingContextToPanels(const QString& timestamp,
+                                      const QString& combinedSource,
+                                      double         centerFreqHz);
+    void loadRecordingSettings();
+    void saveRecordingSettings() const;
 
     IDevice*          device_;
     DeviceController* controller_;
@@ -118,9 +125,11 @@ private:
     QPushButton*    stopBtn_{nullptr};
     QLabel*         statusLabel_{nullptr};
 
-    // ── Recording placeholders (Phase 5 will wire these up) ──────────────────
-    QCheckBox*      recordCheck_{nullptr};
-    QPushButton*    settingsBtn_{nullptr};
+    // ── Recording ────────────────────────────────────────────────────────────
+    QCheckBox*        recordCheck_{nullptr};
+    QPushButton*      settingsBtn_{nullptr};
+    RecordingSettings recordingSettings_{};
+    QString           sessionTimestamp_;     // set at startStream, reused for mid-session panels
 
     static constexpr int    kMaxDemods       = 4;
     static constexpr double kFreqMinMHz      =   30.0;

@@ -1,9 +1,13 @@
 #include "DemodulatorPanel.h"
 #include "CombinedRxController.h"
+#include "../Audio/FmAudioOutput.h"
+#include "../Core/FileNaming.h"
+#include "../DSP/AudioFileHandler.h"
+#include "../DSP/BandpassHandler.h"
 #include "../DSP/BaseDemodHandler.h"
 #include "../DSP/DemodRegistry.h"
-#include "../Audio/FmAudioOutput.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
@@ -95,6 +99,18 @@ void DemodulatorPanel::buildUi() {
     volumeLabel_ = new QLabel("80%", row1);
     volumeLabel_->setFixedWidth(36);
 
+    filteredCheck_ = new QCheckBox(tr("Rec filt"), row1);
+    filteredCheck_->setToolTip(
+        tr("Record filtered I/Q around this demodulator's VFO.\n"
+           "Enable 'Filtered I/Q' in recording settings to activate."));
+    filteredCheck_->setEnabled(false);
+
+    audioCheck_ = new QCheckBox(tr("Rec audio"), row1);
+    audioCheck_->setToolTip(
+        tr("Record demodulated audio (mono float32 WAV).\n"
+           "Enable 'Audio' in recording settings to activate."));
+    audioCheck_->setEnabled(false);
+
     removeButton_ = new QPushButton("\u2715", row1);
     removeButton_->setFixedWidth(26);
     removeButton_->setToolTip("Remove demodulator");
@@ -116,6 +132,9 @@ void DemodulatorPanel::buildUi() {
     hlay1->addWidget(volLabel);
     hlay1->addWidget(volumeSlider_);
     hlay1->addWidget(volumeLabel_);
+    hlay1->addSpacing(8);
+    hlay1->addWidget(filteredCheck_);
+    hlay1->addWidget(audioCheck_);
     hlay1->addStretch();
     hlay1->addWidget(removeButton_);
 
@@ -177,6 +196,11 @@ void DemodulatorPanel::buildUi() {
     connect(removeButton_, &QPushButton::clicked, this, [this]() {
         emit removeRequested(slotIndex_);
     });
+
+    connect(filteredCheck_, &QCheckBox::toggled,
+            this, [this](bool) { updateFilteredRecording(); });
+    connect(audioCheck_, &QCheckBox::toggled,
+            this, [this](bool) { updateAudioRecording(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +214,7 @@ void DemodulatorPanel::attachToController(CombinedRxController* ctrl) {
 }
 
 void DemodulatorPanel::detachFromController() {
+    teardownFilteredRecording();
     teardownDemod();
     ctrl_ = nullptr;
 }
@@ -212,6 +237,107 @@ void DemodulatorPanel::onModeChanged(int index) {
         applyDemod();
 
     emitVfoChanged();
+}
+
+// ---------------------------------------------------------------------------
+bool DemodulatorPanel::recordingDirValid() const {
+    return !recordingDir_.isEmpty() && !recordingTimestamp_.isEmpty();
+}
+
+void DemodulatorPanel::setRecordingContext(const QString& dir,
+                                           const QString& timestamp,
+                                           const QString& combinedSource,
+                                           double         centerFreqHz,
+                                           bool           filteredAllowed,
+                                           bool           audioAllowed)
+{
+    recordingDir_        = dir;
+    recordingTimestamp_  = timestamp;
+    combinedSource_      = combinedSource;
+    recordingCenterHz_   = centerFreqHz;
+    filteredAllowed_     = filteredAllowed;
+    audioAllowed_        = audioAllowed;
+
+    if (filteredCheck_) {
+        filteredCheck_->setEnabled(filteredAllowed);
+        if (!filteredAllowed && filteredCheck_->isChecked())
+            filteredCheck_->setChecked(false);   // triggers teardown via toggled signal
+    }
+    if (audioCheck_) {
+        audioCheck_->setEnabled(audioAllowed);
+        if (!audioAllowed && audioCheck_->isChecked())
+            audioCheck_->setChecked(false);
+    }
+
+    // Re-evaluate — paths may have become valid / invalid.
+    updateFilteredRecording();
+    updateAudioRecording();
+}
+
+void DemodulatorPanel::updateFilteredRecording() {
+    teardownFilteredRecording();
+
+    if (!ctrl_ || !ctrl_->isStreaming()) return;
+    if (!filteredCheck_ || !filteredCheck_->isChecked()) return;
+    if (!filteredAllowed_ || !recordingDirValid())      return;
+
+    const double bwMHz = currentBwMHz();
+    if (bwMHz <= 0.0) return;   // no active mode
+
+    const double bwHz    = bwMHz * 1e6;
+    const double bwKHz   = bwMHz * 1e3;
+    const double vfoHz   = (vfoFreqMHz() - centerFreqMHz_) * 1e6;
+    constexpr double kOutputSR = 250'000.0;   // BandpassExporter default
+
+    const QString suffix = QStringLiteral("bp%1kHz").arg(bwKHz, 0, 'f', 0);
+    const QString path = FileNaming::composeWithSuffix(
+        recordingDir_, recordingTimestamp_, combinedSource_, suffix,
+        recordingCenterHz_, kOutputSR, ".cf32");
+
+    filteredHandler_ = new BandpassHandler(path, vfoHz, bwHz, kOutputSR);
+    ctrl_->addExtraHandler(filteredHandler_);
+}
+
+void DemodulatorPanel::teardownFilteredRecording() {
+    if (!filteredHandler_) return;
+    if (ctrl_) ctrl_->removeExtraHandler(filteredHandler_);
+    delete filteredHandler_;
+    filteredHandler_ = nullptr;
+}
+
+void DemodulatorPanel::updateAudioRecording() {
+    teardownAudioRecording();
+
+    if (!ctrl_ || !ctrl_->isStreaming() || !demodHandler_) return;
+    if (!audioCheck_ || !audioCheck_->isChecked()) return;
+    if (!audioAllowed_ || !recordingDirValid())   return;
+
+    const QString mode = currentMode().toLower();   // "fm" / "am"
+    if (mode.isEmpty()) return;
+
+    const QString suffix = QStringLiteral("%1%2").arg(mode).arg(slotIndex_);
+    const QString dir    = recordingDir_;
+    const QString ts     = recordingTimestamp_;
+    const QString src    = combinedSource_;
+    const double  cf     = recordingCenterHz_;
+
+    auto builder = [dir, ts, src, suffix, cf](double sr) {
+        return FileNaming::composeWithSuffix(dir, ts, src, suffix, cf, sr, ".wav");
+    };
+
+    audioHandler_ = new AudioFileHandler(builder, this);
+    connect(demodHandler_, &BaseDemodHandler::audioReady,
+            audioHandler_, &AudioFileHandler::push, Qt::QueuedConnection);
+}
+
+void DemodulatorPanel::teardownAudioRecording() {
+    if (!audioHandler_) return;
+    if (demodHandler_)
+        disconnect(demodHandler_, &BaseDemodHandler::audioReady,
+                   audioHandler_, &AudioFileHandler::push);
+    audioHandler_->close();
+    delete audioHandler_;
+    audioHandler_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,10 +380,17 @@ void DemodulatorPanel::applyDemod() {
         statusLabel_->setStyleSheet("color: gray; font-size: 11px;");
         statusLabel_->setText(modeStr + ": waiting for first audio block\u2026");
     }
+
+    // Hook up audio recording now that demodHandler_ emits audioReady.
+    updateAudioRecording();
 }
 
 // ---------------------------------------------------------------------------
 void DemodulatorPanel::teardownDemod() {
+    // Close audio WAV before the demod handler goes away (audioReady would
+    // otherwise deliver to a deleted object via queued connection).
+    teardownAudioRecording();
+
     if (ctrl_ && demodHandler_)
         ctrl_->removeExtraHandler(demodHandler_);
 
@@ -339,6 +472,10 @@ void DemodulatorPanel::onStreamStarted() {
     // Re-attach the demodulator to the (newly created) combined pipeline.
     if (ctrl_ && modeCombo_ && modeCombo_->currentIndex() != 0)
         applyDemod();
+
+    // Filtered recording is independent of the demod — attach if the user
+    // had its checkbox on (audio recording is handled inside applyDemod()).
+    updateFilteredRecording();
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +483,13 @@ void DemodulatorPanel::onStreamStopped() {
     if (statusLabel_) statusLabel_->setText("");
     if (levelLabel_)
         levelLabel_->setText("\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF\u25AF");
+
+    // Close any recording handlers so their files are finalized. Ownership
+    // of filteredHandler_ / audioHandler_ lives with the panel — the controller
+    // only holds raw pointers in extraHandlers_ and does not delete them.
+    teardownAudioRecording();
+    teardownFilteredRecording();
+
     // Handler will be cleaned up by CombinedRxController::performCleanup via the
     // extraHandlers_ list. Drop our pointer so we don't double-delete.
     demodHandler_ = nullptr;

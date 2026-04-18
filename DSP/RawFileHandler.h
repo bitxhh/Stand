@@ -1,14 +1,24 @@
 #pragma once
 
 #include "../Core/IPipelineHandler.h"
+#include "../Core/RecordingSettings.h"
 
 #include <QString>
 #include <fstream>
+#include <vector>
 
-// Пишет сырые I/Q float32 сэмплы в бинарный файл (.cf32 формат).
+// ---------------------------------------------------------------------------
+// RawFileHandler — writes interleaved I/Q samples to a binary file.
+//
+// Default format is 32-bit IEEE float (`.cf32`). Setting RawFormat::Float64
+// promotes each sample to 64-bit float before writing (`.cf64`), trading ~2×
+// disk bandwidth for native-precision MATLAB/Python ingestion.
+// ---------------------------------------------------------------------------
 class RawFileHandler : public IPipelineHandler {
 public:
-    explicit RawFileHandler(const QString& path);
+    using Format = RecordingSettings::RawFormat;
+
+    explicit RawFileHandler(const QString& path, Format format = Format::Float32);
     ~RawFileHandler() override;
 
     void processBlock(const float* iq, int count, double sampleRateHz) override;
@@ -16,6 +26,8 @@ public:
     void onStreamStopped() override;
 
 private:
-    QString       path_;
-    std::ofstream file_;
+    QString            path_;
+    Format             format_;
+    std::ofstream      file_;
+    std::vector<double> promoteBuf_;   // used only in Float64 mode
 };

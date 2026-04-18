@@ -70,6 +70,8 @@ add_executable(Stand
 
         Application/CombinedRxController.cpp
         Application/CombinedRxController.h
+        Application/RecordingSettingsDialog.cpp
+        Application/RecordingSettingsDialog.h
 
         DSP/ClassifierHandler.cpp
         DSP/ClassifierHandler.h
@@ -114,6 +116,8 @@ add_executable(Stand
         DSP/DemodRegistry.h
         DSP/RawFileHandler.cpp
         DSP/RawFileHandler.h
+        DSP/AudioFileHandler.cpp
+        DSP/AudioFileHandler.h
         DSP/IqCombiner.cpp
         DSP/IqCombiner.h
         DSP/ToneGenerator.cpp
@@ -124,6 +128,8 @@ add_executable(Stand
 
         Core/DeviceSettings.cpp
         Core/DeviceSettings.h
+        Core/FileNaming.cpp
+        Core/FileNaming.h
         Core/IDevice.h
         Core/IDeviceManager.h
         Core/IPipelineHandler.h
@@ -132,6 +138,7 @@ add_executable(Stand
         Core/LimeException.h
         Core/Logger.cpp
         Core/Logger.h
+        Core/RecordingSettings.h
 )
 
 target_include_directories(Stand PRIVATE

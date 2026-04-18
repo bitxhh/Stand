@@ -2,11 +2,14 @@
 
 #include "CombinedRxController.h"
 #include "DemodulatorPanel.h"
+#include "RecordingSettingsDialog.h"
+#include "../Core/FileNaming.h"
 #include "../Core/IDevice.h"
 #include "../Hardware/DeviceController.h"
 #include "qcustomplot.h"
 
 #include <QCheckBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -14,7 +17,9 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSlider>
+#include <QStandardPaths>
 #include <QThreadPool>
 #include <QVBoxLayout>
 
@@ -42,6 +47,7 @@ RadioMonitorPage::RadioMonitorPage(IDevice*          device,
     connect(ctrl_, &CombinedRxController::streamFinished,
             this,  &RadioMonitorPage::onStreamFinishedInternal, Qt::QueuedConnection);
 
+    loadRecordingSettings();
     buildUi();
 
     // Default channel selection: one RX0. DeviceDetailWindow overrides via
@@ -122,13 +128,13 @@ void RadioMonitorPage::buildUi() {
         addDemodBtn_->setToolTip(QString("Up to %1 demodulators").arg(kMaxDemods));
 
         recordCheck_ = new QCheckBox("Record", row);
-        recordCheck_->setToolTip("Recording pipeline — see settings (Phase 5).");
-        recordCheck_->setEnabled(false);
+        recordCheck_->setToolTip(
+            "Enable recording of raw/combined I/Q at the next stream start.\n"
+            "Per-demodulator filtered/audio capture is controlled on each panel.");
 
         settingsBtn_ = new QPushButton("\u2699", row);
         settingsBtn_->setFixedWidth(32);
-        settingsBtn_->setToolTip("Recording settings (Phase 5)");
-        settingsBtn_->setEnabled(false);
+        settingsBtn_->setToolTip("Recording settings");
 
         hlay->addWidget(addDemodBtn_);
         hlay->addSpacing(12);
@@ -138,6 +144,7 @@ void RadioMonitorPage::buildUi() {
         outer->addWidget(row);
 
         connect(addDemodBtn_, &QPushButton::clicked, this, &RadioMonitorPage::addDemodulator);
+        connect(settingsBtn_, &QPushButton::clicked, this, &RadioMonitorPage::openRecordingSettings);
     }
 
     // ── Demodulator panels area (scrollable) ─────────────────────────────────
@@ -335,10 +342,39 @@ void RadioMonitorPage::startStream() {
         const double g = (i < gainsDb_.size()) ? gainsDb_[i] : 0.0;
         cfg.gainsDb.append(g);
     }
-    // Recording + demodulator slots are attached after the pipeline is up,
-    // via addExtraHandler in each DemodulatorPanel.
 
-    const double sr = device_ ? device_->sampleRate() : 0.0;
+    const double sr        = device_ ? device_->sampleRate() : 0.0;
+    const double centerHz  = cfg.loFreqMHz * 1e6;
+    sessionTimestamp_          = FileNaming::currentTimestamp();
+    const QString& timestamp   = sessionTimestamp_;
+    const QString combinedSrc  = FileNaming::combinedSource(activeChannels_);
+
+    // ── Raw/Combined recording paths ────────────────────────────────────────
+    if (recordCheck_->isChecked() && !recordingSettings_.outputDir.isEmpty()) {
+        QDir().mkpath(recordingSettings_.outputDir);
+        cfg.rawFormat = recordingSettings_.rawFormat;
+        const QString ext = recordingSettings_.rawExtension();
+
+        if (recordingSettings_.recordRawPerChannel) {
+            for (const auto& ch : activeChannels_) {
+                cfg.rawPerChannelPaths.append(FileNaming::compose(
+                    recordingSettings_.outputDir, timestamp,
+                    FileNaming::perChannelSource(ch),
+                    centerHz, sr, ext));
+            }
+        }
+        if (recordingSettings_.recordCombined) {
+            cfg.recordRaw = true;
+            cfg.rawPath = FileNaming::compose(
+                recordingSettings_.outputDir, timestamp,
+                combinedSrc, centerHz, sr, ext);
+        }
+    }
+
+    // Hand the session-wide context to every panel — each decides whether to
+    // activate its own filtered/audio writers based on its local checkboxes.
+    pushRecordingContextToPanels(timestamp, combinedSrc, centerHz);
+
     for (auto* p : panels_) {
         p->setCenterFreqMHz(cfg.loFreqMHz);
         p->setSampleRateHz(sr);
@@ -425,9 +461,22 @@ void RadioMonitorPage::addDemodulator() {
     band->setVisible(false);
     vfoBands_.append(band);
 
-    // If stream is already running, attach immediately.
-    if (isStreaming())
+    // If stream is already running, attach immediately and ensure the panel
+    // has the current session's recording context so its checkboxes work.
+    if (isStreaming()) {
+        const double centerHz     = centerFreqMHz() * 1e6;
+        const QString combinedSrc = FileNaming::combinedSource(activeChannels_);
+        const bool filteredAllowed =
+            recordCheck_->isChecked() && recordingSettings_.recordFiltered
+            && !recordingSettings_.outputDir.isEmpty();
+        const bool audioAllowed =
+            recordCheck_->isChecked() && recordingSettings_.recordAudio
+            && !recordingSettings_.outputDir.isEmpty();
+        panel->setRecordingContext(recordingSettings_.outputDir,
+                                   sessionTimestamp_, combinedSrc, centerHz,
+                                   filteredAllowed, audioAllowed);
         panel->onStreamStarted();
+    }
 
     updateFilterBands();
 }
@@ -497,4 +546,73 @@ void RadioMonitorPage::replotIfDirty() {
 
 void RadioMonitorPage::updateMetrics() {
     for (auto* p : panels_) p->updateMetrics();
+}
+
+// ---------------------------------------------------------------------------
+// Recording settings
+// ---------------------------------------------------------------------------
+void RadioMonitorPage::openRecordingSettings() {
+    RecordingSettingsDialog dlg(recordingSettings_, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    recordingSettings_ = dlg.settings();
+    saveRecordingSettings();
+
+    // If the stream is live, re-broadcast the context so panels can react to
+    // freshly enabled/disabled filtered/audio toggles.
+    if (ctrl_ && ctrl_->isStreaming()) {
+        const double centerHz     = centerFreqMHz() * 1e6;
+        const QString combinedSrc = FileNaming::combinedSource(activeChannels_);
+        pushRecordingContextToPanels(sessionTimestamp_, combinedSrc, centerHz);
+    }
+}
+
+void RadioMonitorPage::pushRecordingContextToPanels(const QString& timestamp,
+                                                    const QString& combinedSource,
+                                                    double         centerFreqHz)
+{
+    const bool filteredAllowed =
+        recordCheck_->isChecked() && recordingSettings_.recordFiltered
+        && !recordingSettings_.outputDir.isEmpty();
+    const bool audioAllowed =
+        recordCheck_->isChecked() && recordingSettings_.recordAudio
+        && !recordingSettings_.outputDir.isEmpty();
+
+    if ((filteredAllowed || audioAllowed) && !recordingSettings_.outputDir.isEmpty())
+        QDir().mkpath(recordingSettings_.outputDir);
+
+    for (auto* p : panels_) {
+        p->setRecordingContext(recordingSettings_.outputDir, timestamp,
+                               combinedSource, centerFreqHz,
+                               filteredAllowed, audioAllowed);
+    }
+}
+
+void RadioMonitorPage::loadRecordingSettings() {
+    QSettings s;
+    const QString defaultDir = QDir(QStandardPaths::writableLocation(
+        QStandardPaths::DocumentsLocation)).filePath("stand_recordings");
+    recordingSettings_.outputDir =
+        s.value("recording/outputDir", defaultDir).toString();
+    recordingSettings_.recordRawPerChannel =
+        s.value("recording/rawPerChannel", false).toBool();
+    recordingSettings_.recordCombined =
+        s.value("recording/combined", false).toBool();
+    recordingSettings_.recordFiltered =
+        s.value("recording/filtered", false).toBool();
+    recordingSettings_.recordAudio =
+        s.value("recording/audio", false).toBool();
+    recordingSettings_.rawFormat = static_cast<RecordingSettings::RawFormat>(
+        s.value("recording/rawFormat",
+                static_cast<int>(RecordingSettings::RawFormat::Float32)).toInt());
+}
+
+void RadioMonitorPage::saveRecordingSettings() const {
+    QSettings s;
+    s.setValue("recording/outputDir",     recordingSettings_.outputDir);
+    s.setValue("recording/rawPerChannel", recordingSettings_.recordRawPerChannel);
+    s.setValue("recording/combined",      recordingSettings_.recordCombined);
+    s.setValue("recording/filtered",      recordingSettings_.recordFiltered);
+    s.setValue("recording/audio",         recordingSettings_.recordAudio);
+    s.setValue("recording/rawFormat",     static_cast<int>(recordingSettings_.rawFormat));
 }
