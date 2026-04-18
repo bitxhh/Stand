@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Core/ChannelDescriptor.h"
+#include "../Core/DeviceSettings.h"
 #include "../Core/RecordingSettings.h"
 #include "../DSP/FftProcessor.h"
 
@@ -65,6 +66,10 @@ public:
 
     [[nodiscard]] bool isStreaming() const;
     [[nodiscard]] double centerFreqMHz() const;
+
+    // Persistence — DemodPanel slot states.
+    [[nodiscard]] QList<DemodPanelSettings> demodPanelStates() const;
+    void restoreDemodPanels(const QList<DemodPanelSettings>& panels);
 
 signals:
     void streamStarted();

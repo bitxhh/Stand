@@ -61,6 +61,22 @@ DeviceSettings DeviceSettings::load(const QString& serial) {
     s.txGainDb       = o.value("txGainDb").toDouble(s.txGainDb);
     s.txToneOffsetHz = o.value("txToneOffsetHz").toDouble(s.txToneOffsetHz);
     s.txAmplitude    = o.value("txAmplitude").toDouble(s.txAmplitude);
+
+    const QJsonArray panels = o.value("demodPanels").toArray();
+    s.demodPanels.reserve(panels.size());
+    for (const QJsonValue& v : panels) {
+        const QJsonObject p = v.toObject();
+        DemodPanelSettings d;
+        d.mode           = p.value("mode").toString(d.mode);
+        d.vfoMHz         = p.value("vfoMHz").toDouble(d.vfoMHz);
+        d.fmBwKHz        = p.value("fmBwKHz").toDouble(d.fmBwKHz);
+        d.fmDeemphSec    = p.value("fmDeemphSec").toDouble(d.fmDeemphSec);
+        d.amBwKHz        = p.value("amBwKHz").toDouble(d.amBwKHz);
+        d.volumePct      = p.value("volumePct").toInt(d.volumePct);
+        d.recordFiltered = p.value("recordFiltered").toBool(d.recordFiltered);
+        d.recordAudio    = p.value("recordAudio").toBool(d.recordAudio);
+        s.demodPanels.append(d);
+    }
     return s;
 }
 
@@ -77,6 +93,21 @@ bool DeviceSettings::save(const QString& serial) const {
     o["txGainDb"]      = txGainDb;
     o["txToneOffsetHz"]= txToneOffsetHz;
     o["txAmplitude"]   = txAmplitude;
+
+    QJsonArray panels;
+    for (const DemodPanelSettings& d : demodPanels) {
+        QJsonObject p;
+        p["mode"]           = d.mode;
+        p["vfoMHz"]         = d.vfoMHz;
+        p["fmBwKHz"]        = d.fmBwKHz;
+        p["fmDeemphSec"]    = d.fmDeemphSec;
+        p["amBwKHz"]        = d.amBwKHz;
+        p["volumePct"]      = d.volumePct;
+        p["recordFiltered"] = d.recordFiltered;
+        p["recordAudio"]    = d.recordAudio;
+        panels.append(p);
+    }
+    o["demodPanels"] = panels;
 
     QFile f(jsonPathFor(serial));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
