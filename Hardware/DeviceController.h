@@ -28,7 +28,12 @@ public:
 public slots:
     // channels empty = все доступные RX (обратная совместимость).
     void initDevice(const QList<ChannelDescriptor>& channels = {});
-    void calibrate(double sampleRateHz, const QList<ChannelDescriptor>& channels = {});
+    // calBwHz — полоса для LMS_Calibrate. -1.0 = вычислить из текущего Fs.
+    void calibrate(const QList<ChannelDescriptor>& channels = {}, double calBwHz = -1.0);
+
+    // Auto-open sequence (background thread): init → setSampleRate → calibrate.
+    // Emits deviceInitialized, sampleRateChanged, statusChanged/errorOccurred.
+    void autoOpen(const QList<ChannelDescriptor>& channels, double sampleRateHz);
 
     void setSampleRate(double sampleRateHz);
 

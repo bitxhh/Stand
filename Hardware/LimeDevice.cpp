@@ -28,6 +28,8 @@ const QList<double> LimeDevice::kSupportedRates = {
     10'000'000,
     15'000'000,
     20'000'000,
+    30'720'000,
+    61'440'000
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +80,17 @@ static void setLpfBwProtected(lms_device_t* h, int ch, double bw, int tiaValue) 
         LOG_WARN("LMS_SetLPFBW(ch=" + std::to_string(ch)
                  + ", bw=" + std::to_string(bw) + ") failed");
     LMS_WriteParam(h, LMS7_G_TIA_RFE, tiaValue);
+}
+
+// Analog LPF bandwidth derived from sample rate (RBB LPFL/LPFH range: 1.4–130 MHz).
+// Guard band of 20 % avoids aliasing at Nyquist.
+static double computeLpfHz(double fs) {
+    return std::clamp(fs / 2.0 * 0.8, 1.4e6, 130e6);
+}
+
+// Calibration bandwidth for LMS_Calibrate (minimum 2.5 MHz per LimeSuite docs).
+static double computeCalBwHz(double fs) {
+    return std::clamp(fs / 2.0 * 0.8, 2.5e6, 120e6);
 }
 
 // PGA compensation register (LMS7002M datasheet).
@@ -221,7 +234,7 @@ void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
                  + antennaName(ant) + " for "
                  + std::to_string(currentFrequency_[ch] / 1e6) + " MHz");
 
-        setLpfBwProtected(handle_, ch, currentSampleRate_, kDefaultTia);
+        setLpfBwProtected(handle_, ch, computeLpfHz(currentSampleRate_), kDefaultTia);
 
         if (LMS_SetLOFrequency(handle_, LMS_CH_RX, ch, currentFrequency_[ch]) != 0)
             throwLime("LMS_SetLOFrequency RX" + std::to_string(ch) + " failed");
@@ -239,8 +252,8 @@ void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
 // ---------------------------------------------------------------------------
 // IDevice: calibrate
 // ---------------------------------------------------------------------------
-void LimeDevice::calibrateChannel(int idx) {
-    const double calBw = std::max(currentSampleRate_, 2.5e6);
+void LimeDevice::calibrateChannel(int idx, double calBwHz) {
+    const double calBw     = calBwHz;
     const double savedGain = currentGainDb_[idx];
 
     if (savedGain > 0.0) {
@@ -266,26 +279,50 @@ void LimeDevice::calibrateChannel(int idx) {
 
     // Всегда восстанавливаем усиление — LMS_Calibrate сбрасывает регистры LNA/PGA/TIA.
     // Даже при savedGain == 0 нужно выставить регистры в известное состояние.
+    {
+        uint16_t macAfterCal = 0;
+        LMS_ReadParam(handle_, LMS7_MAC, &macAfterCal);
+        LOG_INFO("calibrateChannel ch" + std::to_string(idx)
+                 + ": MAC immediately after LMS_Calibrate = " + std::to_string(macAfterCal));
+    }
     LOG_INFO("Calibrate ch" + std::to_string(idx)
              + ": restoring gain to " + std::to_string(savedGain) + " dB");
     LMS_SetGaindB(handle_, LMS_CH_RX, idx, static_cast<unsigned>(savedGain));
+
+    // Явно выставляем MAC на нужный канал перед чтением регистров.
+    // После LMS_Calibrate(ch) MAC может остаться указывающим на другой канал
+    // (LimeSuite не гарантирует его восстановление). Без этого LMS_ReadParam
+    // для PGA ch1 читает регистр ch0.
+    LMS_WriteParam(handle_, LMS7_MAC, idx + 1);  // MAC=1 → ch0, MAC=2 → ch1
+    {
+        uint16_t macCheck = 0;
+        LMS_ReadParam(handle_, LMS7_MAC, &macCheck);
+        LOG_INFO("calibrateChannel ch" + std::to_string(idx)
+                 + ": MAC after restore = " + std::to_string(macCheck));
+    }
 
     // PGA RCC_CTL компенсация — аналогично setGain().
     uint16_t pgaVal = 0;
     LMS_ReadParam(handle_, LMS7_G_PGA_RBB, &pgaVal);
     LMS_WriteParam(handle_, LMS7_RCC_CTL_PGA_RBB, rccCtlForPga(static_cast<int>(pgaVal)));
+    LOG_INFO("calibrateChannel ch" + std::to_string(idx)
+             + ": PGA=" + std::to_string(pgaVal)
+             + " RCC_CTL=" + std::to_string(rccCtlForPga(static_cast<int>(pgaVal))));
 
     if (!ok)
         throwLime("LMS_Calibrate ch" + std::to_string(idx) + " failed after "
                   + std::to_string(kMaxCalRetries) + " attempts");
 
-    setLpfBwProtected(handle_, idx, currentSampleRate_, kDefaultTia);
+    setLpfBwProtected(handle_, idx, computeLpfHz(currentSampleRate_), kDefaultTia);
     LOG_INFO("Calibration ch" + std::to_string(idx) + " done: " + serial_);
 }
 
-void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels) {
+void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels, double calBwHz) {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot calibrate — device not initialized");
+
+    if (calBwHz < 0.0)
+        calBwHz = computeCalBwHz(currentSampleRate_);
 
     // LMS_Calibrate internally resets FPGA/streaming state, which can invalidate
     // any lms_stream_t handles we already hold. Teardown cleanly BEFORE calibration
@@ -308,15 +345,14 @@ void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels) {
         }
     }
 
-    if (calibrateRx[0]) calibrateChannel(0);
-    if (calibrateRx[1]) calibrateChannel(1);
+    if (calibrateRx[0]) calibrateChannel(0, calBwHz);
+    if (calibrateRx[1]) calibrateChannel(1, calBwHz);
 
     // TX calibration (non-fatal — some hardware units don't support it cleanly).
     if (calibrateTx) {
-        const double calBw = std::max(currentSampleRate_, 2.5e6);
-        LOG_INFO("Calibrating TX0 on " + serial_ + " at " + std::to_string(calBw) + " Hz");
-        if (LMS_Calibrate(handle_, LMS_CH_TX, 0, calBw, 0) == 0) {
-            if (LMS_SetLPFBW(handle_, LMS_CH_TX, 0, currentSampleRate_) != 0)
+        LOG_INFO("Calibrating TX0 on " + serial_ + " at " + std::to_string(calBwHz) + " Hz");
+        if (LMS_Calibrate(handle_, LMS_CH_TX, 0, calBwHz, 0) == 0) {
+            if (LMS_SetLPFBW(handle_, LMS_CH_TX, 0, computeLpfHz(currentSampleRate_)) != 0)
                 LOG_WARN("LMS_SetLPFBW TX0 post-calibrate failed");
             LOG_INFO("TX0 calibration done: " + serial_);
         } else {
@@ -345,9 +381,10 @@ void LimeDevice::setSampleRate(double hz) {
     currentSampleRate_ = hz;
 
     // Analog LPF tracks sample rate — RX (TIA-protected) + TX.
+    const double lpfHz = computeLpfHz(hz);
     for (int ch = 0; ch < 2; ++ch) {
-        setLpfBwProtected(handle_, ch, hz, kDefaultTia);
-        if (LMS_SetLPFBW(handle_, LMS_CH_TX, ch, hz) != 0)
+        setLpfBwProtected(handle_, ch, lpfHz, kDefaultTia);
+        if (LMS_SetLPFBW(handle_, LMS_CH_TX, ch, lpfHz) != 0)
             LOG_WARN("LMS_SetLPFBW TX ch" + std::to_string(ch) + " failed");
     }
 

@@ -56,7 +56,8 @@ public:
     // Иначе включаются только указанные каналы (TX0 всегда включается на
     // железе с калибровочным лупбеком).
     virtual void init(const QList<ChannelDescriptor>& channels = {}) = 0;
-    virtual void calibrate(const QList<ChannelDescriptor>& channels = {}) {}  // опционально
+    // calBwHz — полоса сигнала для LMS_Calibrate. -1.0 = вычислить из Fs автоматически.
+    virtual void calibrate(const QList<ChannelDescriptor>& channels = {}, double calBwHz = -1.0) {}  // опционально
     // Останавливает все стримы, закрывает хэндл и сбрасывает состояние в Connected.
     // Вызывается из UI-потока при закрытии DeviceDetailWindow.
     virtual void close() {}

@@ -2,6 +2,7 @@
 #include "Logger.h"
 
 #include <algorithm>
+#include <QtConcurrent/QtConcurrent>
 
 DeviceController::DeviceController(std::shared_ptr<IDevice> device, QObject* parent)
     : QObject(parent)
@@ -20,10 +21,9 @@ void DeviceController::initDevice(const QList<ChannelDescriptor>& channels) {
     }
 }
 
-void DeviceController::calibrate(double sampleRateHz, const QList<ChannelDescriptor>& channels) {
+void DeviceController::calibrate(const QList<ChannelDescriptor>& channels, double calBwHz) {
     try {
-        device_->setSampleRate(sampleRateHz);
-        device_->calibrate(channels);
+        device_->calibrate(channels, calBwHz);
         emit sampleRateChanged(device_->sampleRate());
         emit statusChanged(
             QString("Calibrated at %1 Hz").arg(device_->sampleRate(), 0, 'f', 0));
@@ -80,4 +80,26 @@ void DeviceController::setFrequencyChannel(ChannelDescriptor ch, double freqMHz)
     } catch (const std::exception& ex) {
         emit errorOccurred(QString::fromStdString(ex.what()));
     }
+}
+
+void DeviceController::autoOpen(const QList<ChannelDescriptor>& channels, double sampleRateHz) {
+    (void)QtConcurrent::run([this, channels, sampleRateHz]() {
+        try {
+            emit statusChanged("Initializing…");
+            device_->init(channels);
+            emit deviceInitialized();
+            emit sampleRateChanged(device_->sampleRate());
+
+            device_->setSampleRate(sampleRateHz);
+            emit sampleRateChanged(device_->sampleRate());
+            emit statusChanged("Calibrating…");
+
+            device_->calibrate(channels, -1.0);
+            emit sampleRateChanged(device_->sampleRate());
+            emit statusChanged(
+                QString("Ready — %1 Hz").arg(device_->sampleRate(), 0, 'f', 0));
+        } catch (const std::exception& ex) {
+            emit errorOccurred(QString::fromStdString(ex.what()));
+        }
+    });
 }

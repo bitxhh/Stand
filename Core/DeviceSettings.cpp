@@ -57,6 +57,12 @@ DeviceSettings DeviceSettings::load(const QString& serial) {
     for (int i = 0; i < 2 && i < freqs.size(); ++i)
         s.freqRxMHz[i] = freqs[i].toDouble(s.freqRxMHz[i]);
 
+    const QJsonArray rfBws = o.value("rfBwRxHz").toArray();
+    for (int i = 0; i < 2 && i < rfBws.size(); ++i)
+        s.rfBwRxHz[i] = rfBws[i].toDouble(s.rfBwRxHz[i]);
+
+    s.calBwHz        = o.value("calBwHz").toDouble(s.calBwHz);
+
     s.txFreqMHz      = o.value("txFreqMHz").toDouble(s.txFreqMHz);
     s.txGainDb       = o.value("txGainDb").toDouble(s.txGainDb);
     s.txToneOffsetHz = o.value("txToneOffsetHz").toDouble(s.txToneOffsetHz);
@@ -89,6 +95,8 @@ bool DeviceSettings::save(const QString& serial) const {
     o["channelAssign"] = channelAssign;
     o["gainRx"]        = QJsonArray{ gainRx[0], gainRx[1] };
     o["freqRxMHz"]     = QJsonArray{ freqRxMHz[0], freqRxMHz[1] };
+    o["rfBwRxHz"]      = QJsonArray{ rfBwRxHz[0], rfBwRxHz[1] };
+    o["calBwHz"]       = calBwHz;
     o["txFreqMHz"]     = txFreqMHz;
     o["txGainDb"]      = txGainDb;
     o["txToneOffsetHz"]= txToneOffsetHz;

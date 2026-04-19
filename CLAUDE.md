@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Stand — SDR receiver for LimeSDR. Real-time spectrum, WBFM/AM demodulation, I/Q recording, WAV export. **v1.1.0**
+Stand — SDR receiver for LimeSDR. Real-time spectrum, WBFM/AM demodulation, multi-channel coherent combining, I/Q recording, WAV export. **v2.0**
 
 ## Build
 
@@ -18,7 +18,7 @@ Use **Release** for FM listening — Debug uses 31-tap FIR1 and can't sustain �
 |------------|----------|
 | Qt 6.10 | `C:/Qt/6.10.0/mingw_64` — Widgets, Concurrent, PrintSupport, Multimedia |
 | LimeSuite | `C:/LimeSuite` — headers + `LimeSuite.dll` |
-| FFTW3 | `external/FFTW/` — double precision, static |
+| FFTW3 | `external/FFTW/` — single precision (float32), static |
 | QCustomPlot | `external/qcustomplot/` — static lib |
 | Catch2 v3.7.1 | `Tests/` — unit tests for FFT, FM, AM |
 

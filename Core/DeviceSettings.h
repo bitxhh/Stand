@@ -31,11 +31,21 @@ struct DemodPanelSettings {
 // Storage: <AppDataLocation>/Stand/devices/<sanitized-serial>.{json,ini}
 // ---------------------------------------------------------------------------
 struct DeviceSettings {
+    // Sentinel: поле вычисляется из Fs автоматически (LPF = Fs/2*0.8, calBw = max(LPF, 2.5 MHz)).
+    static constexpr double kBwAuto = -1.0;
+
     double sampleRate      = 2'000'000.0;
     int    channelCount    = 1;
     int    channelAssign   = 0;                 // which RX if channelCount == 1
     double gainRx[2]       = { 0.0, 0.0 };      // dB per RX channel
     double freqRxMHz[2]    = { 102.0, 102.0 };  // center freq per RX
+
+    // Analog LPF per RX channel. kBwAuto = computeLpfHz(sampleRate).
+    // Architecture is ready; UI sliders are hidden until needed.
+    double rfBwRxHz[2]     = { kBwAuto, kBwAuto };
+
+    // Calibration bandwidth for LMS_Calibrate. kBwAuto = computeCalBwHz(sampleRate).
+    double calBwHz         = kBwAuto;
 
     // TX page
     double txFreqMHz       = 102.0;

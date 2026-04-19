@@ -87,6 +87,7 @@ private:
     QLabel*      initStatusLabel{nullptr};
     QLabel*      controlStatusLabel{nullptr};
     QComboBox*   sampleRateSelector{nullptr};
+    QPushButton* resetButton_{nullptr};
     QPushButton* calibrateButton{nullptr};
     // Channel selection (RX count + optional single-channel assignment)
     QSpinBox*   channelCountSpin_{nullptr};
@@ -101,6 +102,7 @@ private:
     // Helper — builds the list of ChannelDescriptors currently selected in UI.
     [[nodiscard]] QList<ChannelDescriptor> selectedChannels() const;
     void updateChannelRowVisibility();
+    void autoOpenDevice();
 
     // ── DSP thread pool — shared across RadioMonitorPage's pipeline ──────────
     QThreadPool* dspPool_{nullptr};

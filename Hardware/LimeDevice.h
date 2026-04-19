@@ -34,7 +34,7 @@ public:
 
     // ── IDevice: жизненный цикл ───────────────────────────────────────────────
     void init(const QList<ChannelDescriptor>& channels = {}) override;
-    void calibrate(const QList<ChannelDescriptor>& channels = {}) override;
+    void calibrate(const QList<ChannelDescriptor>& channels = {}, double calBwHz = -1.0) override;
     void close()     override;
 
     // ── IDevice: параметры (глобальные) ──────────────────────────────────────
@@ -119,7 +119,7 @@ private:
     void setupStream(ChannelDescriptor ch);
     void teardownStream(ChannelDescriptor ch);
     void teardownAllStreams();
-    void calibrateChannel(int idx);
+    void calibrateChannel(int idx, double calBwHz);
     // Retune an actively streaming RX channel. Parks the worker via
     // checkPauseForRetune, stops/reconfigures/restarts the LMS stream
     // (needed to flush the FPGA FIFO), then releases the worker.

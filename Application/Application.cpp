@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <QFile>
 #include <QScrollArea>
 #include <QSize>
 #include "../Core/ChannelDescriptor.h"
@@ -196,6 +195,9 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
             this, &DeviceDetailWindow::handleConnectionCheckFinished);
     connectionTimer->start();
     checkDeviceConnection();
+
+    // ── Auto-open — init+setSampleRate+calibrate without user clicking Init ──
+    autoOpenDevice();
 }
 
 void DeviceDetailWindow::updateTemperature() {
@@ -256,7 +258,6 @@ void DeviceDetailWindow::closeEvent(QCloseEvent* event) {
         if (radioMonitorPage_) s.demodPanels = radioMonitorPage_->demodPanelStates();
 
         s.save(device->id());
-        device->saveConfig(DeviceSettings::iniPathFor(device->id()));
     }
 
     // ── 5. Close hardware — tears down LMS handle, resets state to Connected ─────
@@ -313,8 +314,8 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     for (double rate : device->supportedSampleRates())
         sampleRateSelector->addItem(QString("%1 Hz").arg(rate, 0, 'f', 0), rate);
 
-    auto* initButton = new QPushButton("Initialize device", page);
-    calibrateButton  = new QPushButton("Calibrate",         page);
+    resetButton_    = new QPushButton("Reset device", page);
+    calibrateButton = new QPushButton("Calibrate",    page);
     sampleRateSelector->setEnabled(ready);
     calibrateButton->setEnabled(ready);
 
@@ -407,14 +408,62 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
         gainBoxLay->addWidget(row);
     }
 
-    connect(initButton, &QPushButton::clicked, this, [this]() {
-        controller_->initDevice(selectedChannels());
+    connect(resetButton_, &QPushButton::clicked, this, [this]() {
+        stopAllStreams();
+        device->close();
+
+        // Reset UI widgets to factory defaults.
+        DeviceSettings def;
+        if (sampleRateSelector) {
+            QSignalBlocker b(sampleRateSelector);
+            for (int i = 0; i < sampleRateSelector->count(); ++i) {
+                if (std::abs(sampleRateSelector->itemData(i).toDouble() - def.sampleRate) < 1.0) {
+                    sampleRateSelector->setCurrentIndex(i);
+                    break;
+                }
+            }
+        }
+        if (channelCountSpin_) {
+            QSignalBlocker b(channelCountSpin_);
+            channelCountSpin_->setValue(
+                std::clamp(def.channelCount,
+                           channelCountSpin_->minimum(),
+                           channelCountSpin_->maximum()));
+            channelCountSpin_->setEnabled(true);
+        }
+        if (channelAssignCombo_) {
+            QSignalBlocker b(channelAssignCombo_);
+            const int idx = channelAssignCombo_->findData(def.channelAssign);
+            if (idx >= 0) channelAssignCombo_->setCurrentIndex(idx);
+            channelAssignCombo_->setEnabled(true);
+        }
+        updateChannelRowVisibility();
+        for (int i = 0; i < gainSliders_.size() && i < 2; ++i) {
+            QSignalBlocker b(gainSliders_[i]);
+            gainSliders_[i]->setValue(static_cast<int>(def.gainRx[i]));
+            gainSliders_[i]->setEnabled(false);
+            if (i < gainValueLabels_.size())
+                gainValueLabels_[i]->setText(QString("%1 dB").arg(static_cast<int>(def.gainRx[i])));
+        }
+        sampleRateSelector->setEnabled(false);
+        calibrateButton->setEnabled(false);
+        if (txStartButton_) txStartButton_->setEnabled(false);
+        initStatusLabel->setText("Device not initialized");
+        initStatusLabel->setStyleSheet("");
+        controlStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
+        controlStatusLabel->setText("");
+
+        // Persist defaults (keep current demod panel states).
+        def.demodPanels = radioMonitorPage_ ? radioMonitorPage_->demodPanelStates()
+                                             : QList<DemodPanelSettings>{};
+        def.save(device->id());
+
+        autoOpenDevice();
     });
 
     connect(calibrateButton, &QPushButton::clicked, this, [this]() {
         stopAllStreams();
-        controller_->calibrate(sampleRateSelector->currentData().toDouble(),
-                               selectedChannels());
+        controller_->calibrate(selectedChannels());  // calBwHz = auto (из текущего Fs)
     });
 
     connect(sampleRateSelector, &QComboBox::currentIndexChanged, this, [this]() {
@@ -442,7 +491,7 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addWidget(gainHint);
     layout->addWidget(gainBox);
     layout->addSpacing(12);
-    layout->addWidget(initButton);
+    layout->addWidget(resetButton_);
     layout->addWidget(calibrateButton);
     layout->addStretch();
 
@@ -693,13 +742,8 @@ void DeviceDetailWindow::onDeviceInitialized() {
         radioMonitorPage_->onDeviceReady();
     }
 
+    if (resetButton_) resetButton_->setEnabled(true);
     refreshCurrentSampleRate();
-
-    // Restore chip register state from LimeSuite .ini (written on last close).
-    const QString ini = DeviceSettings::iniPathFor(device->id());
-    if (QFile::exists(ini)) device->loadConfig(ini);
-
-    QMessageBox::information(this, "Initialization", "Device initialized successfully.");
 }
 
 void DeviceDetailWindow::onSampleRateChanged(double hz) {
@@ -727,6 +771,7 @@ void DeviceDetailWindow::onControllerError(const QString& message) {
         controlStatusLabel->setStyleSheet("color: #ff4444; font-size: 11px;");
         controlStatusLabel->setText(message);
     }
+    if (resetButton_) resetButton_->setEnabled(true);
     QMessageBox::critical(this, "Device error", message);
 }
 
@@ -783,6 +828,18 @@ void DeviceDetailWindow::handleConnectionCheckFinished() {
         // would re-enter the event loop while still on the watcher's stack).
         QTimer::singleShot(0, this, [this]() { emit deviceDisconnected(); });
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Auto-open
+// ═══════════════════════════════════════════════════════════════════════════════
+void DeviceDetailWindow::autoOpenDevice() {
+    if (controller_->isInitialized()) return;
+    const double sr = (sampleRateSelector && sampleRateSelector->currentIndex() >= 0)
+                      ? sampleRateSelector->currentData().toDouble()
+                      : device->sampleRate();
+    if (resetButton_) resetButton_->setEnabled(false);
+    controller_->autoOpen(selectedChannels(), sr);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
