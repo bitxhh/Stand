@@ -35,6 +35,7 @@ public:
     // ── IDevice: жизненный цикл ───────────────────────────────────────────────
     void init(const QList<ChannelDescriptor>& channels = {}) override;
     void calibrate(const QList<ChannelDescriptor>& channels = {}, double calBwHz = -1.0) override;
+    void reconfigureChannels(const QList<ChannelDescriptor>& channels) override;
     void close()     override;
 
     // ── IDevice: параметры (глобальные) ──────────────────────────────────────
@@ -131,6 +132,7 @@ private:
 
     // ── Per-channel state ─────────────────────────────────────────────────────
     // RX index 0/1 = RX channel 0/1.  TX index 0/1 = TX channel 0/1.
+    bool   enabledRx_[2]          = {false, false};  // tracked after init/reconfigure
     double currentSampleRate_{2'000'000.0};  // global (same for all channels)
     double currentFrequency_[2]    = {102e6, 102e6};  // RX
     double currentGainDb_[2]       = {0.0,   0.0  };  // RX

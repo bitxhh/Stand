@@ -137,6 +137,61 @@ void LimeDevice::close() {
 }
 
 // ---------------------------------------------------------------------------
+// IDevice: reconfigureChannels — lightweight channel switch without LMS reinit
+// ---------------------------------------------------------------------------
+void LimeDevice::reconfigureChannels(const QList<ChannelDescriptor>& channels) {
+    if (state_ < DeviceState::Ready)
+        throw LimeInitException("reconfigureChannels: device not initialized");
+
+    bool targetRx[2] = {false, false};
+    if (channels.isEmpty()) {
+        targetRx[0] = targetRx[1] = true;
+    } else {
+        for (const auto& ch : channels)
+            if (ch.direction == ChannelDescriptor::RX && ch.channelIndex < 2)
+                targetRx[ch.channelIndex] = true;
+        if (!targetRx[0] && !targetRx[1]) targetRx[0] = true;
+    }
+
+    teardownAllStreams();
+
+    for (int ch = 0; ch < 2; ++ch) {
+        if (LMS_EnableChannel(handle_, LMS_CH_RX, ch, targetRx[ch]) != 0)
+            throwLime("LMS_EnableChannel RX" + std::to_string(ch) + " failed");
+    }
+
+    // Configure newly enabled channels (antenna, LPF, LO).
+    for (int ch = 0; ch < 2; ++ch) {
+        if (!targetRx[ch]) continue;
+        if (!enabledRx_[ch]) {
+            const int ant = antennaForFrequency(currentFrequency_[ch]);
+            if (LMS_SetAntenna(handle_, LMS_CH_RX, ch, ant) != 0)
+                throwLime("LMS_SetAntenna RX" + std::to_string(ch) + " failed");
+            setLpfBwProtected(handle_, ch, computeLpfHz(currentSampleRate_), kDefaultTia);
+            if (LMS_SetLOFrequency(handle_, LMS_CH_RX, ch, currentFrequency_[ch]) != 0)
+                throwLime("LMS_SetLOFrequency RX" + std::to_string(ch) + " failed");
+            LOG_INFO("reconfigureChannels: RX" + std::to_string(ch) + " newly enabled");
+        }
+    }
+
+    // Calibrate only newly enabled channels; LMS_Calibrate resets FPGA streaming
+    // state, so streams must be torn down first (already done above).
+    const double calBw = computeCalBwHz(currentSampleRate_);
+    for (int ch = 0; ch < 2; ++ch)
+        if (targetRx[ch] && !enabledRx_[ch])
+            calibrateChannel(ch, calBw);
+
+    // Rebuild WinUSB I/O warmup handles for all enabled channels.
+    for (int ch = 0; ch < 2; ++ch) {
+        enabledRx_[ch] = targetRx[ch];
+        if (targetRx[ch]) setupStream({ChannelDescriptor::RX, ch});
+    }
+
+    setState(DeviceState::Ready);
+    LOG_INFO("reconfigureChannels done: " + serial_);
+}
+
+// ---------------------------------------------------------------------------
 // IDevice: идентификация
 // ---------------------------------------------------------------------------
 QString LimeDevice::id() const {
@@ -241,9 +296,11 @@ void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
     }
 
     // Warm up WinUSB I/O context for enabled RX channels.
-    for (int ch = 0; ch < 2; ++ch)
+    for (int ch = 0; ch < 2; ++ch) {
+        enabledRx_[ch] = enableRx[ch];
         if (enableRx[ch])
             setupStream({ChannelDescriptor::RX, ch});
+    }
 
     setState(DeviceState::Ready);
     LOG_INFO("LimeDevice ready: " + serial_);

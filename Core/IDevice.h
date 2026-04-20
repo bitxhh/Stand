@@ -58,6 +58,9 @@ public:
     virtual void init(const QList<ChannelDescriptor>& channels = {}) = 0;
     // calBwHz — полоса сигнала для LMS_Calibrate. -1.0 = вычислить из Fs автоматически.
     virtual void calibrate(const QList<ChannelDescriptor>& channels = {}, double calBwHz = -1.0) {}  // опционально
+    // Lightweight channel switch: enable/disable RX channels without LMS_Close/LMS_Init.
+    // Calibrates only newly enabled channels. Default falls back to init().
+    virtual void reconfigureChannels(const QList<ChannelDescriptor>& channels) { init(channels); }
     // Останавливает все стримы, закрывает хэндл и сбрасывает состояние в Connected.
     // Вызывается из UI-потока при закрытии DeviceDetailWindow.
     virtual void close() {}

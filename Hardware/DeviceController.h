@@ -35,6 +35,10 @@ public slots:
     // Emits deviceInitialized, sampleRateChanged, statusChanged/errorOccurred.
     void autoOpen(const QList<ChannelDescriptor>& channels, double sampleRateHz);
 
+    // Lightweight channel switch (background thread): no LMS_Close/LMS_Init.
+    // Calibrates only newly enabled channels. Emits deviceInitialized when done.
+    void reconfigureChannels(const QList<ChannelDescriptor>& channels);
+
     void setSampleRate(double sampleRateHz);
 
     void setGain(double dB);   // 0–68.5 dB → IDevice::setGain() (channel 0, backward compat)

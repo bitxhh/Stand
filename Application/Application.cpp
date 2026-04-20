@@ -916,28 +916,23 @@ void DeviceDetailWindow::setNavEnabled(bool enabled) {
 }
 
 void DeviceDetailWindow::applyChannelSelectionChange() {
-    // Only apply when device is initialized and no stream is running.
-    // During initial auto-open or while streaming the handler is a no-op —
-    // streamStarted disables the widgets, and pre-init changes are picked up
-    // by the first autoOpenDevice() call naturally.
     if (!controller_->isInitialized()) return;
     if (radioMonitorPage_ && radioMonitorPage_->isStreaming()) return;
 
     stopAllStreams();
-    device->close();
 
-    // Reflect the transient "not initialized" state in the UI until autoOpen
-    // finishes; the channel widgets themselves stay editable so the user can
-    // tweak the selection again during reinit if needed.
-    initStatusLabel->setText("Reinitializing...");
+    initStatusLabel->setText("Reconfiguring…");
     initStatusLabel->setStyleSheet("");
     if (sampleRateSelector) sampleRateSelector->setEnabled(false);
     if (calibrateButton)    calibrateButton->setEnabled(false);
     if (resetButton_)       resetButton_->setEnabled(false);
     for (auto* s : gainSliders_) s->setEnabled(false);
     if (txStartButton_) txStartButton_->setEnabled(false);
+    setNavEnabled(false);
+    if (initProgressBar_)  { initProgressBar_->setValue(0); initProgressBar_->setVisible(true); }
+    if (initProgressLabel_) initProgressLabel_->setText("Reconfiguring…");
 
-    autoOpenDevice();
+    controller_->reconfigureChannels(selectedChannels());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

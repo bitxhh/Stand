@@ -82,6 +82,20 @@ void DeviceController::setFrequencyChannel(ChannelDescriptor ch, double freqMHz)
     }
 }
 
+void DeviceController::reconfigureChannels(const QList<ChannelDescriptor>& channels) {
+    (void)QtConcurrent::run([this, channels]() {
+        try {
+            emit progressChanged(0, "Reconfiguring channels…");
+            device_->reconfigureChannels(channels);
+            emit sampleRateChanged(device_->sampleRate());
+            emit progressChanged(100, QString("Ready — %1 Hz").arg(device_->sampleRate(), 0, 'f', 0));
+            emit deviceInitialized();
+        } catch (const std::exception& ex) {
+            emit errorOccurred(QString::fromStdString(ex.what()));
+        }
+    });
+}
+
 void DeviceController::autoOpen(const QList<ChannelDescriptor>& channels, double sampleRateHz) {
     (void)QtConcurrent::run([this, channels, sampleRateHz]() {
         try {
