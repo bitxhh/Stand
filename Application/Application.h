@@ -13,6 +13,7 @@
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
@@ -103,6 +104,7 @@ private:
     [[nodiscard]] QList<ChannelDescriptor> selectedChannels() const;
     void updateChannelRowVisibility();
     void autoOpenDevice();
+    void applyChannelSelectionChange();
 
     // ── DSP thread pool — shared across RadioMonitorPage's pipeline ──────────
     QThreadPool* dspPool_{nullptr};
@@ -129,6 +131,11 @@ private:
     QPushButton*    txStopButton_{nullptr};
     QLabel*         txStatusLabel_{nullptr};
     TxController*   txCtrl_{nullptr};
+
+    // ── Init progress bar ─────────────────────────────────────────────────────
+    QProgressBar* initProgressBar_{nullptr};
+    QLabel*       initProgressLabel_{nullptr};
+    void          setNavEnabled(bool enabled);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     QWidget* createDeviceInfoPage();

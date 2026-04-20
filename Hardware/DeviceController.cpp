@@ -85,19 +85,35 @@ void DeviceController::setFrequencyChannel(ChannelDescriptor ch, double freqMHz)
 void DeviceController::autoOpen(const QList<ChannelDescriptor>& channels, double sampleRateHz) {
     (void)QtConcurrent::run([this, channels, sampleRateHz]() {
         try {
-            emit statusChanged("Initializing…");
+            emit progressChanged(0, "Initializing…");
             device_->init(channels);
             emit deviceInitialized();
             emit sampleRateChanged(device_->sampleRate());
 
+            emit progressChanged(15, "Setting sample rate…");
             device_->setSampleRate(sampleRateHz);
             emit sampleRateChanged(device_->sampleRate());
-            emit statusChanged("Calibrating…");
 
-            device_->calibrate(channels, -1.0);
+            emit progressChanged(25, "Preparing calibration…");
+
+            QList<ChannelDescriptor> rxChs;
+            for (const auto& ch : channels)
+                if (ch.direction == ChannelDescriptor::RX)
+                    rxChs.append(ch);
+
+            if (rxChs.isEmpty()) {
+                emit progressChanged(30, "Calibrating…");
+                device_->calibrate({}, -1.0);
+            } else {
+                for (int i = 0; i < rxChs.size(); ++i) {
+                    const int pct = (rxChs.size() == 1) ? 30 : 30 + i * 35;
+                    emit progressChanged(pct, QString("Calibrating RX%1…").arg(rxChs[i].channelIndex));
+                    device_->calibrate({rxChs[i]}, -1.0);
+                }
+            }
+
             emit sampleRateChanged(device_->sampleRate());
-            emit statusChanged(
-                QString("Ready — %1 Hz").arg(device_->sampleRate(), 0, 'f', 0));
+            emit progressChanged(100, QString("Ready — %1 Hz").arg(device_->sampleRate(), 0, 'f', 0));
         } catch (const std::exception& ex) {
             emit errorOccurred(QString::fromStdString(ex.what()));
         }

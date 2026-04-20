@@ -53,6 +53,7 @@ signals:
     void sampleRateChanged(double hz);
     void statusChanged(const QString& message);
     void errorOccurred(const QString& message);
+    void progressChanged(int percent, const QString& stage);
 
 private:
     std::shared_ptr<IDevice> device_;
