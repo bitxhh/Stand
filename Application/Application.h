@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractItemView>
+#include <QToolBar>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QCheckBox>
@@ -46,6 +47,7 @@ public:
 
 signals:
     void deviceDisconnected();
+    void openDeviceSelectionRequested();
 
 protected:
     void closeEvent(QCloseEvent* event) override;

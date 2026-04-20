@@ -16,6 +16,7 @@ public:
     explicit SessionManager(QObject* parent = nullptr);
 
     [[nodiscard]] bool isInUse(const QString& deviceId) const;
+    [[nodiscard]] bool hasAny() const;
     void markInUse(const QString& deviceId);
     void release(const QString& deviceId);
 

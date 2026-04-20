@@ -8,6 +8,10 @@ bool SessionManager::isInUse(const QString& deviceId) const {
     return inUse_.contains(deviceId);
 }
 
+bool SessionManager::hasAny() const {
+    return !inUse_.isEmpty();
+}
+
 void SessionManager::markInUse(const QString& deviceId) {
     if (!inUse_.contains(deviceId)) {
         inUse_.insert(deviceId);

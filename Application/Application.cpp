@@ -111,6 +111,15 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
         dlg.exec();
     });
 
+    // ── Toolbar: «+» to open / reopen device selection ────────────────────────
+    auto* devToolbar = addToolBar(tr("Devices"));
+    devToolbar->setMovable(false);
+    devToolbar->setFloatable(false);
+    auto* addDevAction = devToolbar->addAction(tr("+  Add device"));
+    addDevAction->setToolTip(tr("Open device selection to connect another device"));
+    connect(addDevAction, &QAction::triggered,
+            this, &DeviceDetailWindow::openDeviceSelectionRequested);
+
     // ── TX controller ─────────────────────────────────────────────────────────
     txCtrl_ = new TxController(this->device.get(),
                                ChannelDescriptor{ChannelDescriptor::TX, 0}, this);
@@ -953,10 +962,39 @@ DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager,
     setWindowTitle("Stand — SDR");
     setMinimumWidth(320);
     auto* layout = new QVBoxLayout(this);
-    statusLabel  = new QLabel("Searching for SDR devices...", this);
-    deviceList   = new QListWidget(this);
-    layout->addWidget(statusLabel);
+
+    // ── Top row: status label + settings gear ─────────────────────────────────
+    auto* topRow  = new QWidget(this);
+    auto* topHlay = new QHBoxLayout(topRow);
+    topHlay->setContentsMargins(0, 0, 0, 0);
+    statusLabel = new QLabel("Searching for SDR devices...", topRow);
+    auto* settingsBtn = new QPushButton(tr("\u2699"), topRow);  // ⚙
+    settingsBtn->setFixedSize(24, 24);
+    settingsBtn->setFlat(true);
+    settingsBtn->setToolTip(tr("Settings"));
+    topHlay->addWidget(statusLabel, 1);
+    topHlay->addWidget(settingsBtn);
+
+    deviceList = new QListWidget(this);
+    layout->addWidget(topRow);
     layout->addWidget(deviceList);
+
+    connect(settingsBtn, &QPushButton::clicked, this, [this, settingsBtn]() {
+        QMenu menu(this);
+        QMenu* pollMenu = menu.addMenu(tr("Polling interval"));
+        for (auto [ms, label] : {std::pair{500,  "0.5 s"},
+                                  std::pair{1000, "1 s"},
+                                  std::pair{2000, "2 s"},
+                                  std::pair{5000, "5 s"}}) {
+            auto* a = pollMenu->addAction(tr(label));
+            a->setCheckable(true);
+            a->setChecked(refreshTimer->interval() == ms);
+            connect(a, &QAction::triggered, this, [this, ms]() {
+                refreshTimer->setInterval(ms);
+            });
+        }
+        menu.exec(settingsBtn->mapToGlobal(settingsBtn->rect().bottomLeft()));
+    });
 
     refreshTimer = new QTimer(this);
     refreshTimer->setInterval(1000);
@@ -1008,6 +1046,10 @@ void DeviceSelectionWindow::openDevice(const std::shared_ptr<IDevice>& dev) {
     if (sessions_.isInUse(dev->id())) return;
     sessions_.markInUse(dev->id());
 
+    // Hide selection window while the device is in use.
+    refreshTimer->stop();
+    hide();
+
     auto* window = new DeviceDetailWindow(dev, manager);
     window->setAttribute(Qt::WA_DeleteOnClose);
 
@@ -1016,10 +1058,24 @@ void DeviceSelectionWindow::openDevice(const std::shared_ptr<IDevice>& dev) {
             "Connection to the device was lost. The window will close.");
         window->close();
     });
-    // Release the session slot whenever the window is destroyed
-    // (covers both normal X-close and disconnect-triggered close).
+    // Release session slot; show selection window again if no devices remain.
     connect(window, &QObject::destroyed, this, [this, devId = dev->id()]() {
         sessions_.release(devId);
+        if (!sessions_.hasAny()) {
+            refreshDevices();
+            refreshTimer->start();
+            show();
+        }
+    });
+    // «+» toolbar button in the device window reopens selection.
+    connect(window, &DeviceDetailWindow::openDeviceSelectionRequested, this, [this]() {
+        if (!isVisible()) {
+            refreshDevices();
+            refreshTimer->start();
+            show();
+        }
+        raise();
+        activateWindow();
     });
 
     window->resize(1600, 750);
