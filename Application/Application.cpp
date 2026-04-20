@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <QMenuBar>
 #include <QScrollArea>
 #include <QSize>
 #include "../Core/ChannelDescriptor.h"
 #include "../Core/DeviceSettings.h"
+#include "LoggerOptionsDialog.h"
 #include "RadioMonitorPage.h"
 #include "TxController.h"
 
@@ -32,6 +34,19 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
             this,        &DeviceDetailWindow::onControllerStatus);
     connect(controller_, &DeviceController::errorOccurred,
             this,        &DeviceDetailWindow::onControllerError);
+    connect(controller_, &DeviceController::progressChanged,
+            this, [this](int percent, const QString& stage) {
+        if (initProgressBar_) {
+            initProgressBar_->setValue(percent);
+            initProgressBar_->setVisible(true);
+        }
+        if (initProgressLabel_) initProgressLabel_->setText(stage);
+        if (percent == 100) {
+            if (initProgressBar_) initProgressBar_->setVisible(false);
+            if (initProgressLabel_) initProgressLabel_->clear();
+            setNavEnabled(true);
+        }
+    }, Qt::QueuedConnection);
 
     // ── DSP thread pool — one per DeviceDetailWindow, shared with the
     // combined pipeline managed by RadioMonitorPage.
@@ -88,6 +103,13 @@ DeviceDetailWindow::DeviceDetailWindow(std::shared_ptr<IDevice> device, IDeviceM
     splitter->setStretchFactor(1, 1);
     mainLayout->addWidget(splitter);
     setCentralWidget(central);
+
+    // ── Menu bar ──────────────────────────────────────────────────────────────
+    auto* toolsMenu = menuBar()->addMenu(tr("Tools"));
+    connect(toolsMenu->addAction(tr("Logger settings…")), &QAction::triggered, this, [this]() {
+        LoggerOptionsDialog dlg(this);
+        dlg.exec();
+    });
 
     // ── TX controller ─────────────────────────────────────────────────────────
     txCtrl_ = new TxController(this->device.get(),
@@ -310,6 +332,15 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     controlStatusLabel = new QLabel(page);
     controlStatusLabel->setStyleSheet("color: gray; font-size: 11px;");
 
+    initProgressBar_ = new QProgressBar(page);
+    initProgressBar_->setRange(0, 100);
+    initProgressBar_->setTextVisible(false);
+    initProgressBar_->setFixedHeight(8);
+    initProgressBar_->setVisible(false);
+    initProgressLabel_ = new QLabel(page);
+    initProgressLabel_->setStyleSheet("color: gray; font-size: 11px;");
+    initProgressLabel_->setVisible(true);
+
     sampleRateSelector = new QComboBox(page);
     for (double rate : device->supportedSampleRates())
         sampleRateSelector->addItem(QString("%1 Hz").arg(rate, 0, 'f', 0), rate);
@@ -358,6 +389,12 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
         if (channelAssignRow_)
             channelAssignRow_->setVisible(numRx > 1 && v == 1);
         updateChannelRowVisibility();
+        applyChannelSelectionChange();
+    });
+
+    connect(channelAssignCombo_, &QComboBox::currentIndexChanged,
+            this, [this](int) {
+        applyChannelSelectionChange();
     });
 
     // ── Per-channel gain rows ─────────────────────────────────────────────────
@@ -477,6 +514,8 @@ QWidget* DeviceDetailWindow::createDeviceControlPage() {
     layout->addSpacing(8);
     layout->addWidget(initStatusLabel);
     layout->addWidget(controlStatusLabel);
+    layout->addWidget(initProgressBar_);
+    layout->addWidget(initProgressLabel_);
     layout->addSpacing(12);
     layout->addWidget(new QLabel("Sample rate", page));
     layout->addWidget(sampleRateSelector);
@@ -551,6 +590,9 @@ QWidget* DeviceDetailWindow::createRadioMonitorPage() {
         // LMS_GetDeviceList (watchdog) interferes with USB during streaming.
         connectionTimer->stop();
         if (calibrateButton) calibrateButton->setEnabled(false);
+        // Channel selection is frozen while the stream is running.
+        if (channelCountSpin_)   channelCountSpin_->setEnabled(false);
+        if (channelAssignCombo_) channelAssignCombo_->setEnabled(false);
         if (!metricsTimer_) {
             metricsTimer_ = new QTimer(this);
             connect(metricsTimer_, &QTimer::timeout, this, [this]() {
@@ -562,6 +604,8 @@ QWidget* DeviceDetailWindow::createRadioMonitorPage() {
     connect(radioMonitorPage_, &RadioMonitorPage::streamStopped, this, [this]() {
         if (metricsTimer_) metricsTimer_->stop();
         if (calibrateButton) calibrateButton->setEnabled(controller_->isInitialized());
+        if (channelCountSpin_)   channelCountSpin_->setEnabled(true);
+        if (channelAssignCombo_) channelAssignCombo_->setEnabled(true);
         connectionTimer->start();
     });
     connect(radioMonitorPage_, &RadioMonitorPage::errorOccurred, this,
@@ -726,8 +770,10 @@ void DeviceDetailWindow::onDeviceInitialized() {
 
     sampleRateSelector->setEnabled(true);
     calibrateButton->setEnabled(true);
-    if (channelCountSpin_)   channelCountSpin_->setEnabled(false);
-    if (channelAssignCombo_) channelAssignCombo_->setEnabled(false);
+    // Channel widgets remain editable while no stream is running; they are
+    // gated on stream state by the streamStarted/streamStopped handlers.
+    if (channelCountSpin_)   channelCountSpin_->setEnabled(true);
+    if (channelAssignCombo_) channelAssignCombo_->setEnabled(true);
     for (auto* s : gainSliders_) s->setEnabled(true);
     updateChannelRowVisibility();
     if (txStartButton_) txStartButton_->setEnabled(true);
@@ -771,6 +817,9 @@ void DeviceDetailWindow::onControllerError(const QString& message) {
         controlStatusLabel->setStyleSheet("color: #ff4444; font-size: 11px;");
         controlStatusLabel->setText(message);
     }
+    if (initProgressBar_)  initProgressBar_->setVisible(false);
+    if (initProgressLabel_) initProgressLabel_->clear();
+    setNavEnabled(true);
     if (resetButton_) resetButton_->setEnabled(true);
     QMessageBox::critical(this, "Device error", message);
 }
@@ -839,7 +888,47 @@ void DeviceDetailWindow::autoOpenDevice() {
                       ? sampleRateSelector->currentData().toDouble()
                       : device->sampleRate();
     if (resetButton_) resetButton_->setEnabled(false);
+    setNavEnabled(false);
+    if (initProgressBar_)  { initProgressBar_->setValue(0); initProgressBar_->setVisible(true); }
+    if (initProgressLabel_)  initProgressLabel_->setText("Initializing…");
     controller_->autoOpen(selectedChannels(), sr);
+}
+
+void DeviceDetailWindow::setNavEnabled(bool enabled) {
+    if (!functionList) return;
+    const Qt::ItemFlags on  = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+    const Qt::ItemFlags off = Qt::ItemIsSelectable;
+    // Index 1 is "Device control" — always accessible.
+    for (int i = 0; i < functionList->count(); ++i) {
+        if (i == 1) continue;
+        if (auto* it = functionList->item(i))
+            it->setFlags(enabled ? on : off);
+    }
+}
+
+void DeviceDetailWindow::applyChannelSelectionChange() {
+    // Only apply when device is initialized and no stream is running.
+    // During initial auto-open or while streaming the handler is a no-op —
+    // streamStarted disables the widgets, and pre-init changes are picked up
+    // by the first autoOpenDevice() call naturally.
+    if (!controller_->isInitialized()) return;
+    if (radioMonitorPage_ && radioMonitorPage_->isStreaming()) return;
+
+    stopAllStreams();
+    device->close();
+
+    // Reflect the transient "not initialized" state in the UI until autoOpen
+    // finishes; the channel widgets themselves stay editable so the user can
+    // tweak the selection again during reinit if needed.
+    initStatusLabel->setText("Reinitializing...");
+    initStatusLabel->setStyleSheet("");
+    if (sampleRateSelector) sampleRateSelector->setEnabled(false);
+    if (calibrateButton)    calibrateButton->setEnabled(false);
+    if (resetButton_)       resetButton_->setEnabled(false);
+    for (auto* s : gainSliders_) s->setEnabled(false);
+    if (txStartButton_) txStartButton_->setEnabled(false);
+
+    autoOpenDevice();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

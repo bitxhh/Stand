@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "LoggerConfig.h"
 
 #include <chrono>
 #include <ctime>
@@ -7,7 +8,6 @@
 #include <sstream>
 
 Logger& Logger::instance() {
-    // Meyer's singleton — constructed once, destroyed at program exit.
     static Logger instance;
     return instance;
 }
@@ -26,38 +26,47 @@ Logger::~Logger() {
 
 void Logger::setLogFile(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (logFile_.is_open()) {
-        logFile_.close();
-    }
+    if (logFile_.is_open()) logFile_.close();
     logFile_.open(path, std::ios::app);
-    if (!logFile_.is_open()) {
-        // Fall back to stderr — don't throw from the logger itself.
+    if (!logFile_.is_open())
         std::cerr << "[Logger] WARNING: Cannot open log file: " << path << std::endl;
-    }
 }
 
-void Logger::log(LogLevel level, const std::string& message) {
+void Logger::log(LogLevel level, const std::string& msg) {
+    log(level, {}, msg);
+}
+
+void Logger::log(LogLevel level, const QString& category, const std::string& msg) {
     const std::string ts  = currentTimestamp();
     const std::string lvl = levelToString(level);
-    const std::string line = "[" + ts + "] [" + lvl + "] " + message;
+    const std::string cat = category.isEmpty()
+                            ? ""
+                            : "[" + category.toStdString() + "] ";
+    const std::string line = "[" + ts + "] [" + lvl + "] " + cat + msg;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (logFile_.is_open()) {
             logFile_ << line << "\n";
-            logFile_.flush();        // flush immediately so crash logs are complete
+            logFile_.flush();
         }
-        // Mirror to stderr for Debug builds
 #ifndef NDEBUG
         std::cerr << line << std::endl;
 #endif
     }
 
-    // Qt signal — must cross thread boundary safely.
-    // Qt::AutoConnection handles main-thread vs worker-thread automatically.
     emit logEntryAdded(static_cast<int>(level),
+                       category,
                        QString::fromStdString(ts),
-                       QString::fromStdString("[" + lvl + "] " + message));
+                       QString::fromStdString("[" + lvl + "] " + cat + msg));
+}
+
+void Logger::logParam(const QString& paramKey, double value) {
+    if (!LoggerConfig::instance().isEnabled(paramKey))
+        return;
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3) << value;
+    log(LogLevel::Info, paramKey, paramKey.toStdString() + " = " + oss.str());
 }
 
 std::string Logger::levelToString(LogLevel level) const {

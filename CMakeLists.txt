@@ -72,6 +72,8 @@ add_executable(Stand
         Application/CombinedRxController.h
         Application/RecordingSettingsDialog.cpp
         Application/RecordingSettingsDialog.h
+        Application/LoggerOptionsDialog.cpp
+        Application/LoggerOptionsDialog.h
 
         DSP/ClassifierHandler.cpp
         DSP/ClassifierHandler.h
@@ -133,11 +135,14 @@ add_executable(Stand
         Core/IDevice.h
         Core/IDeviceManager.h
         Core/IPipelineHandler.h
+        Core/ILogger.h
         Core/Pipeline.cpp
         Core/Pipeline.h
         Core/LimeException.h
         Core/Logger.cpp
         Core/Logger.h
+        Core/LoggerConfig.cpp
+        Core/LoggerConfig.h
         Core/RecordingSettings.h
 )
 
@@ -212,6 +217,7 @@ add_executable(StandTests
         DSP/IqCombiner.cpp
         Core/Pipeline.cpp
         Core/Logger.cpp
+        Core/LoggerConfig.cpp
 )
 
 target_include_directories(StandTests PRIVATE
