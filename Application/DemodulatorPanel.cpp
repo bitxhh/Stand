@@ -140,7 +140,7 @@ void DemodulatorPanel::buildUi() {
 
     outer->addWidget(row1);
 
-    // ── Row 2: status + SNR bar ──────────────────────────────────────────────
+    // ── Row 2: status + IF level ─────────────────────────────────────────────
     auto* row2  = new QWidget(this);
     auto* hlay2 = new QHBoxLayout(row2);
     hlay2->setContentsMargins(0, 0, 0, 0);
@@ -568,29 +568,6 @@ void DemodulatorPanel::applyState(const DemodPanelSettings& s) {
 // ---------------------------------------------------------------------------
 void DemodulatorPanel::updateMetrics() {
     if (!levelLabel_ || !demodHandler_) return;
-
-    const double snr   = demodHandler_->snrDb();
     const double ifRms = demodHandler_->ifRms();
-
-    constexpr int    kBlocks = 10;
-    constexpr double kSnrMax = 15.0;
-    const int filled = static_cast<int>(
-        std::clamp(snr / kSnrMax * kBlocks, 0.0, static_cast<double>(kBlocks)));
-
-    QString bar;
-    bar.reserve(kBlocks);
-    for (int i = 0; i < kBlocks; ++i)
-        bar += (i < filled) ? QChar(0x25AE) : QChar(0x25AF);
-
-    const QString color = (snr > 6.0)  ? "#00cc44"
-                        : (snr > 2.0)  ? "#ffaa00"
-                        :                "#888888";
-
-    levelLabel_->setStyleSheet(
-        QString("color: %1; font-size: 10px;").arg(color));
-    levelLabel_->setText(
-        QString("%1  SNR %2 dB  IF %3")
-            .arg(bar)
-            .arg(snr,   0, 'f', 1)
-            .arg(ifRms, 0, 'f', 3));
+    levelLabel_->setText(QString("IF %1").arg(ifRms, 0, 'f', 3));
 }

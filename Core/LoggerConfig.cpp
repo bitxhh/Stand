@@ -13,16 +13,19 @@ LoggerConfig& LoggerConfig::instance() {
 
 LoggerConfig::LoggerConfig() {
     params_ = {
-        { QLatin1String(LogCat::kSignalQuality),  "Signal quality"           },
         { QLatin1String(LogCat::kGainRx0),        "Gain RX0"                 },
         { QLatin1String(LogCat::kGainRx1),        "Gain RX1"                 },
         { QLatin1String(LogCat::kFreqRx0),        "Frequency RX0"            },
         { QLatin1String(LogCat::kFreqRx1),        "Frequency RX1"            },
         { QLatin1String(LogCat::kSampleRate),     "Sample rate"              },
         { QLatin1String(LogCat::kCalibration),    "Calibration events"       },
-        { QLatin1String(LogCat::kPipelineTiming), "Pipeline handler timings" },
-        { QLatin1String(LogCat::kAudioUnderrun),  "Audio underruns"          },
-        { QLatin1String(LogCat::kPipelineDrop),   "Pipeline drops"           },
+        { QLatin1String(LogCat::kPipelineTiming),  "Pipeline handler timings" },
+        { QLatin1String(LogCat::kAudioUnderrun),   "Audio underruns"          },
+        { QLatin1String(LogCat::kPipelineDrop),    "Pipeline drops"           },
+        { QLatin1String(LogCat::kDeviceLifecycle), "Device lifecycle"         },
+        { QLatin1String(LogCat::kStreamIo),        "Stream I/O"               },
+        { QLatin1String(LogCat::kDemodInit),       "Demodulator init"         },
+        { QLatin1String(LogCat::kCombinedRx),      "Combined RX controller"   },
     };
     for (const auto& p : params_)
         enabled_[p.key] = false;

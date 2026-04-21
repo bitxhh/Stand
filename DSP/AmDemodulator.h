@@ -19,7 +19,7 @@ public:
     void setBandwidth(double bandwidthHz);
 
 protected:
-    DemodResult demodulateIF(std::complex<double> ifSample, double ifPower) override;
+    double demodulateIF(std::complex<double> ifSample, double ifPower) override;
     void resetDemodState() override;
     const char* demodName() const override { return "AmDemodulator"; }
 

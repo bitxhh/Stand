@@ -19,8 +19,8 @@ void TxWorker::stop() {
 
 void TxWorker::run() {
     const QString devId = device_->id();
-    LOG_INFO("TxWorker started: ch" + std::to_string(channel_.channelIndex)
-             + " on " + devId.toStdString());
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Info, "TxWorker started: ch"
+             + std::to_string(channel_.channelIndex) + " on " + devId.toStdString());
     emit statusMessage(QString("TX active: %1").arg(devId));
 
     try {
@@ -57,8 +57,8 @@ void TxWorker::run() {
     source_->onTxStopped();
     device_->stopStream(channel_);
 
-    LOG_INFO("TxWorker finished: ch" + std::to_string(channel_.channelIndex)
-             + " on " + devId.toStdString());
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Info, "TxWorker finished: ch"
+             + std::to_string(channel_.channelIndex) + " on " + devId.toStdString());
     emit statusMessage(QString("TX stopped: %1").arg(devId));
     emit finished();
 }

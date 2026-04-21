@@ -2,7 +2,9 @@
 #include "LoggerConfig.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -13,7 +15,15 @@ Logger& Logger::instance() {
 }
 
 Logger::Logger() {
-    setLogFile("stand.log");
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata) {
+        std::filesystem::path dir = std::filesystem::path(appdata) / "Stand";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        setLogFile((dir / "stand.log").string());
+    } else {
+        setLogFile("stand.log");
+    }
 }
 
 Logger::~Logger() {
@@ -37,6 +47,9 @@ void Logger::log(LogLevel level, const std::string& msg) {
 }
 
 void Logger::log(LogLevel level, const QString& category, const std::string& msg) {
+    if (!category.isEmpty() && !LoggerConfig::instance().isEnabled(category))
+        return;
+
     const std::string ts  = currentTimestamp();
     const std::string lvl = levelToString(level);
     const std::string cat = category.isEmpty()

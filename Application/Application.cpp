@@ -974,25 +974,13 @@ DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager,
     layout->addWidget(topRow);
     layout->addWidget(deviceList);
 
-    connect(settingsBtn, &QPushButton::clicked, this, [this, settingsBtn]() {
-        QMenu menu(this);
-        QMenu* pollMenu = menu.addMenu(tr("Polling interval"));
-        for (auto [ms, label] : {std::pair{500,  "0.5 s"},
-                                  std::pair{1000, "1 s"},
-                                  std::pair{2000, "2 s"},
-                                  std::pair{5000, "5 s"}}) {
-            auto* a = pollMenu->addAction(tr(label));
-            a->setCheckable(true);
-            a->setChecked(refreshTimer->interval() == ms);
-            connect(a, &QAction::triggered, this, [this, ms]() {
-                refreshTimer->setInterval(ms);
-            });
-        }
-        menu.exec(settingsBtn->mapToGlobal(settingsBtn->rect().bottomLeft()));
+    connect(settingsBtn, &QPushButton::clicked, this, [this]() {
+        LoggerOptionsDialog dlg(this);
+        dlg.exec();
     });
 
     refreshTimer = new QTimer(this);
-    refreshTimer->setInterval(1000);
+    refreshTimer->setInterval(500);
     connect(refreshTimer, &QTimer::timeout, this, &DeviceSelectionWindow::refreshDevices);
 
     connect(&refreshWatcher,

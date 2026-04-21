@@ -45,25 +45,18 @@ public:
     [[nodiscard]] int    decimation1()     const { return D1_;      }
     [[nodiscard]] double bandwidth()       const { return bandwidth_; }
     [[nodiscard]] double ifRms()           const { return ifRmsOut_; }
-    [[nodiscard]] double snrDb()           const { return snrDbOut_; }
 
 protected:
-    // Result of subclass demodulation: two real samples.
-    struct DemodResult {
-        double audioSample;   // → FIR2 input
-        double snrSample;     // → noise HP estimator input
-    };
-
     BaseDemodulator(double inputSR, double stationOffsetHz,
                     double fir1CutoffHz, double fir2CutoffHz,
-                    double snrHpCutoffHz, double minIfHz,
+                    double minIfHz,
                     int fir1Taps = kDefaultFir1Taps,
                     int fir2Taps = kDefaultFir2Taps);
 
-    // Subclass implements: demodulate one IF-rate sample.
+    // Subclass implements: demodulate one IF-rate sample → audio sample.
     // ifSample: complex signal after FIR1 + D1 decimation.
     // ifPower:  |ifSample|² (already computed for diagnostics).
-    virtual DemodResult demodulateIF(std::complex<double> ifSample, double ifPower) = 0;
+    virtual double demodulateIF(std::complex<double> ifSample, double ifPower) = 0;
 
     // Called after base resets state in setOffset(). Override to reset
     // subclass-specific state (discriminator, de-emphasis, etc.).
@@ -72,11 +65,9 @@ protected:
     // Subclass name for log messages.
     virtual const char* demodName() const = 0;
 
-    // Subclass tools — redesign filters or SNR estimator on the fly.
+    // Subclass tools — redesign filters on the fly.
     void redesignFir1(double cutoffHz);
     void redesignFir2(double cutoffHz);
-    void setSnrHpCutoff(double cutoffHz);
-    void resetSnr();
 
     // Accessible by subclass
     double inputSR_;
@@ -94,19 +85,12 @@ private:
     // ── DSP blocks ───────────────────────────────────────────────────────────
     dsp::DcBlocker    dc_;
     dsp::Nco          nco_;
-    dsp::IirHighpass1 snrHp_;
 
     // ── IF power ─────────────────────────────────────────────────────────────
     double ifPowerAvg_{0.0};
     static constexpr double kPowerAlpha = 0.01;
 
-    // ── SNR estimator ────────────────────────────────────────────────────────
-    double audioPowerAvg_{0.0};
-    double noisePowerAvg_{0.0};
-    static constexpr double kSnrAlpha = 0.005;
-
     double ifRmsOut_{0.0};
-    double snrDbOut_{0.0};
 
     int diagBlockCount_{0};
     static constexpr int kDiagInterval = 4096;

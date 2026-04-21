@@ -108,12 +108,12 @@ LimeDevice::LimeDevice(const lms_info_str_t& id, QObject* parent)
 {
     std::memcpy(deviceId_, id, sizeof(lms_info_str_t));
     serial_ = parseSerial(id);
-    LOG_DEBUG("LimeDevice created: " + serial_);
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Debug, "LimeDevice created: " + serial_);
 }
 
 LimeDevice::~LimeDevice() {
     if (handle_) {
-        LOG_INFO("LimeDevice closing: " + serial_);
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info, "LimeDevice closing: " + serial_);
         teardownAllStreams();
         LMS_Close(handle_);
         handle_ = nullptr;
@@ -129,7 +129,7 @@ void LimeDevice::close() {
         setState(DeviceState::Connected);
         return;
     }
-    LOG_INFO("LimeDevice::close: " + serial_);
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info, "LimeDevice::close: " + serial_);
     teardownAllStreams();
     LMS_Close(handle_);
     handle_ = nullptr;
@@ -170,7 +170,8 @@ void LimeDevice::reconfigureChannels(const QList<ChannelDescriptor>& channels) {
             setLpfBwProtected(handle_, ch, computeLpfHz(currentSampleRate_), kDefaultTia);
             if (LMS_SetLOFrequency(handle_, LMS_CH_RX, ch, currentFrequency_[ch]) != 0)
                 throwLime("LMS_SetLOFrequency RX" + std::to_string(ch) + " failed");
-            LOG_INFO("reconfigureChannels: RX" + std::to_string(ch) + " newly enabled");
+            LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                    "reconfigureChannels: RX" + std::to_string(ch) + " newly enabled");
         }
     }
 
@@ -188,7 +189,7 @@ void LimeDevice::reconfigureChannels(const QList<ChannelDescriptor>& channels) {
     }
 
     setState(DeviceState::Ready);
-    LOG_INFO("reconfigureChannels done: " + serial_);
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info, "reconfigureChannels done: " + serial_);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +213,7 @@ void LimeDevice::setState(DeviceState s) {
 // IDevice: init
 // ---------------------------------------------------------------------------
 void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
-    LOG_INFO("LimeDevice init: " + serial_);
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info, "LimeDevice init: " + serial_);
     setState(DeviceState::Connected);
 
     // Decide which RX channels to enable. Empty list = all available RX.
@@ -259,13 +260,15 @@ void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
     // ── Log hardware capabilities ────────────────────────────────────────────
     lms_range_t loRange{};
     if (LMS_GetLOFrequencyRange(handle_, LMS_CH_RX, &loRange) == 0)
-        LOG_INFO("LO range: " + std::to_string(loRange.min / 1e6) + " – "
-                 + std::to_string(loRange.max / 1e6) + " MHz");
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                "LO range: " + std::to_string(loRange.min / 1e6) + " – "
+                + std::to_string(loRange.max / 1e6) + " MHz");
 
     lms_range_t lpfRange{};
     if (LMS_GetLPFBWRange(handle_, LMS_CH_RX, &lpfRange) == 0)
-        LOG_INFO("LPF BW range: " + std::to_string(lpfRange.min / 1e6) + " – "
-                 + std::to_string(lpfRange.max / 1e6) + " MHz");
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                "LPF BW range: " + std::to_string(lpfRange.min / 1e6) + " – "
+                + std::to_string(lpfRange.max / 1e6) + " MHz");
 
     if (LMS_SetSampleRate(handle_, currentSampleRate_, 2) != 0)
         throwLime("LMS_SetSampleRate failed");
@@ -285,9 +288,10 @@ void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
         const int ant = antennaForFrequency(currentFrequency_[ch]);
         if (LMS_SetAntenna(handle_, LMS_CH_RX, ch, ant) != 0)
             throwLime("LMS_SetAntenna RX" + std::to_string(ch) + " failed");
-        LOG_INFO("Antenna RX" + std::to_string(ch) + ": "
-                 + antennaName(ant) + " for "
-                 + std::to_string(currentFrequency_[ch] / 1e6) + " MHz");
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                "Antenna RX" + std::to_string(ch) + ": "
+                + antennaName(ant) + " for "
+                + std::to_string(currentFrequency_[ch] / 1e6) + " MHz");
 
         setLpfBwProtected(handle_, ch, computeLpfHz(currentSampleRate_), kDefaultTia);
 
@@ -303,7 +307,7 @@ void LimeDevice::init(const QList<ChannelDescriptor>& channels) {
     }
 
     setState(DeviceState::Ready);
-    LOG_INFO("LimeDevice ready: " + serial_);
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info, "LimeDevice ready: " + serial_);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,14 +317,14 @@ void LimeDevice::calibrateChannel(int idx, double calBwHz) {
     const double calBw     = calBwHz;
     const double savedGain = currentGainDb_[idx];
 
-    if (savedGain > 0.0) {
-        LOG_INFO("Calibrate ch" + std::to_string(idx)
-                 + ": lowering gain to 0 dB (was " + std::to_string(savedGain) + " dB)");
-        LMS_SetGaindB(handle_, LMS_CH_RX, idx, 0);
-    }
+    // LMS_Calibrate runs at whatever gain is currently programmed — the chip
+    // needs the real RX signal path to estimate DC/IQ corrections. The gain
+    // is preserved across calibration via the restore step below.
 
-    LOG_INFO("Calibrating ch" + std::to_string(idx)
-             + " on " + serial_ + " at " + std::to_string(calBw) + " Hz");
+    LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+            "Calibrating ch" + std::to_string(idx)
+            + " on " + serial_ + " at " + std::to_string(calBw)
+            + " Hz (gain " + std::to_string(savedGain) + " dB)");
 
     static constexpr int kMaxCalRetries = 3;
     bool ok = false;
@@ -339,11 +343,13 @@ void LimeDevice::calibrateChannel(int idx, double calBwHz) {
     {
         uint16_t macAfterCal = 0;
         LMS_ReadParam(handle_, LMS7_MAC, &macAfterCal);
-        LOG_INFO("calibrateChannel ch" + std::to_string(idx)
-                 + ": MAC immediately after LMS_Calibrate = " + std::to_string(macAfterCal));
+        LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+                "calibrateChannel ch" + std::to_string(idx)
+                + ": MAC immediately after LMS_Calibrate = " + std::to_string(macAfterCal));
     }
-    LOG_INFO("Calibrate ch" + std::to_string(idx)
-             + ": restoring gain to " + std::to_string(savedGain) + " dB");
+    LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+            "Calibrate ch" + std::to_string(idx)
+            + ": restoring gain to " + std::to_string(savedGain) + " dB");
     LMS_SetGaindB(handle_, LMS_CH_RX, idx, static_cast<unsigned>(savedGain));
 
     // Явно выставляем MAC на нужный канал перед чтением регистров.
@@ -354,24 +360,27 @@ void LimeDevice::calibrateChannel(int idx, double calBwHz) {
     {
         uint16_t macCheck = 0;
         LMS_ReadParam(handle_, LMS7_MAC, &macCheck);
-        LOG_INFO("calibrateChannel ch" + std::to_string(idx)
-                 + ": MAC after restore = " + std::to_string(macCheck));
+        LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+                "calibrateChannel ch" + std::to_string(idx)
+                + ": MAC after restore = " + std::to_string(macCheck));
     }
 
     // PGA RCC_CTL компенсация — аналогично setGain().
     uint16_t pgaVal = 0;
     LMS_ReadParam(handle_, LMS7_G_PGA_RBB, &pgaVal);
     LMS_WriteParam(handle_, LMS7_RCC_CTL_PGA_RBB, rccCtlForPga(static_cast<int>(pgaVal)));
-    LOG_INFO("calibrateChannel ch" + std::to_string(idx)
-             + ": PGA=" + std::to_string(pgaVal)
-             + " RCC_CTL=" + std::to_string(rccCtlForPga(static_cast<int>(pgaVal))));
+    LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+            "calibrateChannel ch" + std::to_string(idx)
+            + ": PGA=" + std::to_string(pgaVal)
+            + " RCC_CTL=" + std::to_string(rccCtlForPga(static_cast<int>(pgaVal))));
 
     if (!ok)
         throwLime("LMS_Calibrate ch" + std::to_string(idx) + " failed after "
                   + std::to_string(kMaxCalRetries) + " attempts");
 
     setLpfBwProtected(handle_, idx, computeLpfHz(currentSampleRate_), kDefaultTia);
-    LOG_INFO("Calibration ch" + std::to_string(idx) + " done: " + serial_);
+    LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+            "Calibration ch" + std::to_string(idx) + " done: " + serial_);
 }
 
 void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels, double calBwHz) {
@@ -407,11 +416,12 @@ void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels, double calB
 
     // TX calibration (non-fatal — some hardware units don't support it cleanly).
     if (calibrateTx) {
-        LOG_INFO("Calibrating TX0 on " + serial_ + " at " + std::to_string(calBwHz) + " Hz");
+        LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+                "Calibrating TX0 on " + serial_ + " at " + std::to_string(calBwHz) + " Hz");
         if (LMS_Calibrate(handle_, LMS_CH_TX, 0, calBwHz, 0) == 0) {
             if (LMS_SetLPFBW(handle_, LMS_CH_TX, 0, computeLpfHz(currentSampleRate_)) != 0)
                 LOG_WARN("LMS_SetLPFBW TX0 post-calibrate failed");
-            LOG_INFO("TX0 calibration done: " + serial_);
+            LOG_CAT(LogCat::kCalibration, LogLevel::Info, "TX0 calibration done: " + serial_);
         } else {
             LOG_WARN("LMS_Calibrate TX0 failed — continuing without TX calibration");
         }
@@ -420,7 +430,8 @@ void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels, double calB
     // Re-setup both RX channels to restore the WinUSB I/O warmup context (same as init does).
     for (int ch = 0; ch < 2; ++ch)
         setupStream({ChannelDescriptor::RX, ch});
-    LOG_INFO("Stream handles rebuilt after calibration: " + serial_);
+    LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+            "Stream handles rebuilt after calibration: " + serial_);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +441,8 @@ void LimeDevice::setSampleRate(double hz) {
     if (hz <= 0.0)
         throw LimeParameterException("Sample rate must be > 0");
 
-    LOG_INFO("setSampleRate " + std::to_string(hz) + " Hz on " + serial_);
+    LOG_CAT(LogCat::kSampleRate, LogLevel::Info,
+            "setSampleRate " + std::to_string(hz) + " Hz on " + serial_);
 
     if (LMS_SetSampleRate(handle_, hz, 2) != 0)
         throwLime("LMS_SetSampleRate failed");
@@ -446,7 +458,7 @@ void LimeDevice::setSampleRate(double hz) {
     }
 
     emit sampleRateChanged(hz);
-    LOG_INFO("Sample rate set: " + std::to_string(hz) + " Hz");
+    LOG_CAT(LogCat::kSampleRate, LogLevel::Info, "Sample rate set: " + std::to_string(hz) + " Hz");
 }
 
 double LimeDevice::sampleRate() const {
@@ -484,8 +496,9 @@ void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
                      + ": requested " + std::to_string(hz / 1e6)
                      + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
         currentTxFrequency_[idx] = hz;
-        LOG_INFO("TX" + std::to_string(idx) + " freq set: "
-                 + std::to_string(hz / 1e6) + " MHz on " + serial_);
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                "TX" + std::to_string(idx) + " freq set: "
+                + std::to_string(hz / 1e6) + " MHz on " + serial_);
         return;
     }
 
@@ -505,8 +518,9 @@ void LimeDevice::setFrequency(ChannelDescriptor ch, double hz) {
     if (antenna != prevAntenna) {
         if (LMS_SetAntenna(handle_, LMS_CH_RX, idx, antenna) != 0)
             throwLime("LMS_SetAntenna failed");
-        LOG_INFO("Antenna RX" + std::to_string(idx) + " changed: "
-                 + antennaName(antenna) + " for " + std::to_string(hz / 1e6) + " MHz");
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                "Antenna RX" + std::to_string(idx) + " changed: "
+                + antennaName(antenna) + " for " + std::to_string(hz / 1e6) + " MHz");
     }
 
     if (LMS_SetLOFrequency(handle_, LMS_CH_RX, idx, hz) != 0)
@@ -543,8 +557,9 @@ void LimeDevice::setGain(ChannelDescriptor ch, double dB) {
         if (LMS_SetGaindB(handle_, LMS_CH_TX, idx, static_cast<unsigned>(dB)) != 0)
             throwLime("LMS_SetGaindB TX failed");
         currentTxGainDb_[idx] = dB;
-        LOG_INFO("TX" + std::to_string(idx) + " gain set: "
-                 + std::to_string(dB) + " dB on " + serial_);
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                "TX" + std::to_string(idx) + " gain set: "
+                + std::to_string(dB) + " dB on " + serial_);
         return;
     }
 
@@ -564,9 +579,23 @@ void LimeDevice::setGain(ChannelDescriptor ch, double dB) {
     LMS_WriteParam(handle_, LMS7_G_TIA_RFE, kDefaultTia);
 
     currentGainDb_[idx] = dB;
-    LOG_INFO("Gain RX" + std::to_string(idx) + ": "
-             + std::to_string(dB) + " dB  PGA=" + std::to_string(pgaVal)
-             + " RCC=" + std::to_string(rcc) + " on " + serial_);
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+            "Gain RX" + std::to_string(idx) + ": "
+            + std::to_string(dB) + " dB  PGA=" + std::to_string(pgaVal)
+            + " RCC=" + std::to_string(rcc) + " on " + serial_);
+
+    // LMS_Calibrate is gain-dependent: DC/IQ corrections differ with LNA/PGA
+    // state, so changing gain invalidates the previous calibration. We
+    // re-calibrate only this channel; fast enough to be transparent to the UI.
+    // Skipped while streaming because calibrate() tears down streams, which
+    // would crash active worker readBlock() calls.
+    if (state_ == DeviceState::Ready) {
+        calibrate({ch}, -1.0);
+    } else if (state_ == DeviceState::Streaming) {
+        LOG_CAT(LogCat::kCalibration, LogLevel::Info,
+                "setGain RX" + std::to_string(idx)
+                + ": skipping auto-calibration while streaming");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,8 +623,9 @@ void LimeDevice::setupStream(ChannelDescriptor ch) {
         throwLime("LMS_SetupStream failed for ch" + std::to_string(ch.channelIndex));
 
     streams_[ch] = stream;
-    LOG_DEBUG("Stream ready: ch" + std::to_string(ch.channelIndex)
-              + (isTx ? " TX" : " RX") + " on " + serial_);
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Debug,
+            "Stream ready: ch" + std::to_string(ch.channelIndex)
+            + (isTx ? " TX" : " RX") + " on " + serial_);
 }
 
 void LimeDevice::teardownStream(ChannelDescriptor ch) {
@@ -604,8 +634,9 @@ void LimeDevice::teardownStream(ChannelDescriptor ch) {
     LMS_StopStream(&it->second);
     LMS_DestroyStream(handle_, &it->second);
     streams_.erase(it);
-    LOG_DEBUG("Stream torn down: ch" + std::to_string(ch.channelIndex)
-              + " on " + serial_);
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Debug,
+            "Stream torn down: ch" + std::to_string(ch.channelIndex)
+            + " on " + serial_);
 }
 
 void LimeDevice::teardownAllStreams() {
@@ -624,8 +655,9 @@ void LimeDevice::prepareStream(ChannelDescriptor ch) {
     // Teardown если уже был setup от прошлого сеанса
     if (streams_.count(ch)) teardownStream(ch);
     setupStream(ch);
-    LOG_DEBUG("prepareStream done: ch" + std::to_string(ch.channelIndex)
-              + " on " + serial_);
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Debug,
+            "prepareStream done: ch" + std::to_string(ch.channelIndex)
+            + " on " + serial_);
 }
 
 // ---------------------------------------------------------------------------
@@ -660,16 +692,18 @@ void LimeDevice::startStream(ChannelDescriptor ch) {
         throwLime("LMS_StartStream failed for ch" + std::to_string(ch.channelIndex));
     }
     setState(DeviceState::Streaming);
-    LOG_INFO("LMS_StartStream OK: ch" + std::to_string(ch.channelIndex)
-             + " on " + serial_);
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Info,
+            "LMS_StartStream OK: ch" + std::to_string(ch.channelIndex)
+            + " on " + serial_);
 }
 
 void LimeDevice::stopStream(ChannelDescriptor ch) {
     teardownStream(ch);
     if (streams_.empty() && state_ == DeviceState::Streaming)
         setState(DeviceState::Ready);
-    LOG_INFO("Stream stopped: ch" + std::to_string(ch.channelIndex)
-             + " on " + serial_);
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Info,
+            "Stream stopped: ch" + std::to_string(ch.channelIndex)
+            + " on " + serial_);
 }
 
 int LimeDevice::readBlock(ChannelDescriptor ch, int16_t* buffer, int count, int timeoutMs) {
@@ -733,8 +767,9 @@ void LimeDevice::performStreamingRetune(int idx, double hz) {
     if (LMS_SetAntenna(handle_, LMS_CH_RX, idx, ant) != 0)
         LOG_WARN("LMS_SetAntenna (retune) failed: RX" + std::to_string(idx));
     else
-        LOG_DEBUG("Antenna (retune) RX" + std::to_string(idx)
-                  + " → " + antennaName(ant));
+        LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Debug,
+                "Antenna (retune) RX" + std::to_string(idx)
+                + " → " + antennaName(ant));
 
     // Stop → change LO → restart to flush FPGA FIFO.
     // LMS_StopStream / LMS_StartStream only affect this channel's stream;
@@ -753,8 +788,9 @@ void LimeDevice::performStreamingRetune(int idx, double hz) {
                      + ": requested " + std::to_string(hz / 1e6)
                      + " MHz, actual " + std::to_string(actualLo / 1e6) + " MHz");
         else
-            LOG_DEBUG("LO updated: RX" + std::to_string(idx)
-                      + " → " + std::to_string(hz / 1e6) + " MHz");
+            LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Debug,
+                    "LO updated: RX" + std::to_string(idx)
+                    + " → " + std::to_string(hz / 1e6) + " MHz");
     }
 
     if (LMS_StartStream(&it->second) != 0) {

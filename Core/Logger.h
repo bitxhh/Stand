@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ILogger.h"
+#include "LoggerConfig.h"
 
 #include <QObject>
 #include <fstream>
@@ -58,3 +59,7 @@ private:
 #define LOG_WARN(msg)         Logger::instance().log(LogLevel::Warning, msg)
 #define LOG_ERROR(msg)        Logger::instance().log(LogLevel::Error,   msg)
 #define LOG_PARAM(key, value) Logger::instance().logParam((key), (value))
+
+// Category-filtered log. Dropped when LoggerConfig::isEnabled(cat) is false.
+#define LOG_CAT(cat, level, msg) \
+    Logger::instance().log((level), QLatin1String(cat), (msg))

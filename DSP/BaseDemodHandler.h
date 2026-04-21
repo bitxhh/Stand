@@ -16,7 +16,7 @@
 // BaseDemodHandler — common IPipelineHandler wrapper for all demodulators.
 //
 // Manages:  generic named parameters (thread-safe), lazy-init,
-//           audioReady signal, snrDb/ifRms proxy.
+//           audioReady signal, ifRms proxy.
 //
 // Subclasses implement:
 //   paramDescriptors()  — UI metadata (spin/combo definitions)
@@ -42,7 +42,6 @@ public:
     // NCO offset — universal, not a "parameter".
     void setOffset(double hz);
 
-    [[nodiscard]] double snrDb() const { return dem_ ? dem_->snrDb() : 0.0; }
     [[nodiscard]] double ifRms() const { return dem_ ? dem_->ifRms() : 0.0; }
 
     // IPipelineHandler

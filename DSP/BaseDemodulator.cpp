@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 BaseDemodulator::BaseDemodulator(double inputSR, double stationOffsetHz,
                                  double fir1CutoffHz, double fir2CutoffHz,
-                                 double snrHpCutoffHz, double minIfHz,
+                                 double minIfHz,
                                  int fir1Taps, int fir2Taps)
     : inputSR_(inputSR)
     , stationOffset_(stationOffsetHz)
@@ -41,9 +41,6 @@ BaseDemodulator::BaseDemodulator(double inputSR, double stationOffsetHz,
 
     // ── NCO ──────────────────────────────────────────────────────────────────
     nco_.setFrequency(stationOffset_, inputSR_);
-
-    // ── SNR highpass ─────────────────────────────────────────────────────────
-    snrHp_.setCutoff(snrHpCutoffHz, ifSR_);
 }
 
 // ---------------------------------------------------------------------------
@@ -60,16 +57,6 @@ void BaseDemodulator::redesignFir2(double cutoffHz) {
     fir2Coeffs_ = dsp::designLowpassFir(fir2Taps_, cutoff / ifSR_);
     std::fill(fir2Delay_.begin(), fir2Delay_.end(), 0.0);
     fir2Head_ = 0;
-}
-
-void BaseDemodulator::setSnrHpCutoff(double cutoffHz) {
-    snrHp_.setCutoff(cutoffHz, ifSR_);
-}
-
-void BaseDemodulator::resetSnr() {
-    snrHp_.reset();
-    audioPowerAvg_ = 0.0;
-    noisePowerAvg_ = 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,11 +76,11 @@ void BaseDemodulator::setOffset(double offsetHz) {
     fir2Head_    = 0;
     dec2Counter_ = 0;
 
-    resetSnr();
     resetDemodState();
 
-    LOG_INFO(std::string(demodName()) + ": offset set to "
-             + std::to_string(static_cast<int>(offsetHz)) + " Hz");
+    LOG_CAT(LogCat::kDemodInit, LogLevel::Info,
+            std::string(demodName()) + ": offset set to "
+            + std::to_string(static_cast<int>(offsetHz)) + " Hz");
 }
 
 // ---------------------------------------------------------------------------
@@ -170,25 +157,16 @@ QVector<float> BaseDemodulator::pushBlock(const float* iq, int count) {
         ifPowerAvg_ = (1.0 - kPowerAlpha) * ifPowerAvg_ + kPowerAlpha * ifPower;
 
         // ── 7. Subclass demodulation ─────────────────────────────────────────
-        const auto [audioSample, snrSample] = demodulateIF(filtered1, ifPower);
+        const double audioSample = demodulateIF(filtered1, ifPower);
 
-        // ── 8. SNR noise estimator ───────────────────────────────────────────
-        const double hpOut = snrHp_.process(snrSample);
-        noisePowerAvg_ = (1.0 - kSnrAlpha) * noisePowerAvg_
-                       + kSnrAlpha * (hpOut * hpOut);
-
-        // ── 9. FIR2 audio lowpass ────────────────────────────────────────────
+        // ── 8. FIR2 audio lowpass ────────────────────────────────────────────
         const double filtered2 = fir2Step(audioSample);
 
-        // ── 10. Stage-2 decimation ───────────────────────────────────────────
+        // ── 9. Stage-2 decimation ───────────────────────────────────────────
         if (++dec2Counter_ < D2_) continue;
         dec2Counter_ = 0;
 
-        // ── 10a. Audio power for SNR ─────────────────────────────────────────
-        audioPowerAvg_ = (1.0 - kSnrAlpha) * audioPowerAvg_
-                       + kSnrAlpha * (filtered2 * filtered2);
-
-        // ── 11. Output ───────────────────────────────────────────────────────
+        // ── 10. Output ───────────────────────────────────────────────────────
         audio.push_back(static_cast<float>(filtered2));
     }
 
@@ -196,28 +174,7 @@ QVector<float> BaseDemodulator::pushBlock(const float* iq, int count) {
     diagBlockCount_ += numSamples / D1_;
     if (diagBlockCount_ >= kDiagInterval) {
         diagBlockCount_ = 0;
-
-        const double ifRms = std::sqrt(ifPowerAvg_);
-
-        double snr = 0.0;
-        const char* quality;
-        if (noisePowerAvg_ > 1e-20) {
-            snr = 10.0 * std::log10(audioPowerAvg_ / noisePowerAvg_);
-            if (snr < 0.0) snr = 0.0;
-            quality = snr > 6.0 ? "SIGNAL" : snr > 2.0 ? "MARGINAL" : "NOISE";
-        } else {
-            quality = "WARMUP";
-        }
-
-        ifRmsOut_ = ifRms;
-        snrDbOut_ = snr;
-
-        LOG_DEBUG(std::string(demodName())
-                  + "  if_rms="    + std::to_string(ifRms)
-                  + "  snr="       + std::to_string(snr) + " dB"
-                  + "  audio_pwr=" + std::to_string(audioPowerAvg_)
-                  + "  noise_pwr=" + std::to_string(noisePowerAvg_)
-                  + "  [" + quality + "]");
+        ifRmsOut_ = std::sqrt(ifPowerAvg_);
     }
 
     return audio;

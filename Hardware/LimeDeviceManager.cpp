@@ -38,8 +38,8 @@ void LimeDeviceManager::refresh() {
             });
 
         if (!stillPresent) {
-            LOG_INFO("LimeDeviceManager: device removed: "
-                     + lime->id().toStdString());
+            LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                    "LimeDeviceManager: device removed: " + lime->id().toStdString());
             it = devices_.erase(it);
             changed = true;
         } else {
@@ -56,8 +56,8 @@ void LimeDeviceManager::refresh() {
 
         if (!known) {
             auto dev = std::make_shared<LimeDevice>(id);
-            LOG_INFO("LimeDeviceManager: device found: "
-                     + dev->id().toStdString());
+            LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+                    "LimeDeviceManager: device found: " + dev->id().toStdString());
             devices_.append(std::move(dev));
             changed = true;
         }

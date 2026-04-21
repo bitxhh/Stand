@@ -31,8 +31,9 @@ void BaseDemodHandler::onStreamStarted(double sampleRateHz) {
     }
     try {
         dem_ = createDemodulator(sampleRateHz, stationOffsetHz_, paramsCopy);
-        LOG_INFO(std::string(handlerName()) + ": ready — audio SR="
-                 + std::to_string(static_cast<int>(dem_->audioSampleRate())) + " Hz");
+        LOG_CAT(LogCat::kDemodInit, LogLevel::Info,
+                std::string(handlerName()) + ": ready — audio SR="
+                + std::to_string(static_cast<int>(dem_->audioSampleRate())) + " Hz");
     } catch (const std::exception& ex) {
         LOG_ERROR(std::string(handlerName()) + " init failed: " + ex.what());
         dem_.reset();

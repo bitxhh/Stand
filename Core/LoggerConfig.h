@@ -6,16 +6,19 @@
 
 // Predefined parameter-log category keys — used as filter tokens in LoggerConfig.
 namespace LogCat {
-    inline constexpr const char* kSignalQuality  = "signal_quality";
     inline constexpr const char* kGainRx0        = "gain_rx0";
     inline constexpr const char* kGainRx1        = "gain_rx1";
     inline constexpr const char* kFreqRx0        = "freq_rx0";
     inline constexpr const char* kFreqRx1        = "freq_rx1";
     inline constexpr const char* kSampleRate     = "sample_rate";
     inline constexpr const char* kCalibration    = "calibration";
-    inline constexpr const char* kPipelineTiming = "pipeline_timing";
-    inline constexpr const char* kAudioUnderrun  = "audio_underrun";
-    inline constexpr const char* kPipelineDrop   = "pipeline_drop";
+    inline constexpr const char* kPipelineTiming  = "pipeline_timing";
+    inline constexpr const char* kAudioUnderrun   = "audio_underrun";
+    inline constexpr const char* kPipelineDrop    = "pipeline_drop";
+    inline constexpr const char* kDeviceLifecycle = "device_lifecycle";
+    inline constexpr const char* kStreamIo        = "stream_io";
+    inline constexpr const char* kDemodInit       = "demod_init";
+    inline constexpr const char* kCombinedRx      = "combined_rx";
 }
 
 // Runtime filter for LOG_PARAM calls.  Disabled keys are dropped before

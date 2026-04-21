@@ -21,7 +21,7 @@ void RxWorker::stop() {
 
 void RxWorker::run() {
     const QString devId = device_->id();
-    LOG_INFO("RxWorker started: " + devId.toStdString());
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Info, "RxWorker started: " + devId.toStdString());
     emit statusMessage(QString("Streaming: %1").arg(devId));
 
     // Старт стрима
@@ -54,7 +54,7 @@ void RxWorker::run() {
         const int n = device_->readBlock(channel_, buffer_.data(), kBlockSize, 100);
 
         if (diagCount < 10) {
-            LOG_DEBUG("readBlock[" + std::to_string(diagCount) + "] = " + std::to_string(n));
+            LOG_CAT(LogCat::kStreamIo, LogLevel::Debug, "readBlock[" + std::to_string(diagCount) + "] = " + std::to_string(n));
             ++diagCount;
         }
 
@@ -86,7 +86,7 @@ void RxWorker::run() {
     // that touch the same map (setFrequency on a streaming channel, close()).
     // RxController calls stopStream on the main thread after finished().
 
-    LOG_INFO("RxWorker finished: " + devId.toStdString());
+    LOG_CAT(LogCat::kStreamIo, LogLevel::Info, "RxWorker finished: " + devId.toStdString());
     emit statusMessage(QString("Stream stopped: %1").arg(devId));
     emit finished();
 }

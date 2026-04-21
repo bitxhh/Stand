@@ -26,9 +26,9 @@ void LimeSyncController::setReferenceSource(IDevice* device, ReferenceSource src
     //   else
     //       LMS_SetClockFreq(handle, LMS_CLOCK_EXTREF, 0);  // revert to internal
 
-    LOG_INFO("SyncController: reference source for device "
-             + device->id().toStdString() + " → "
-             + (src == ReferenceSource::External10MHz ? "External 10 MHz" : "Internal"));
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+            "SyncController: reference source for device " + device->id().toStdString()
+            + " → " + (src == ReferenceSource::External10MHz ? "External 10 MHz" : "Internal"));
     emit referenceSourceChanged(device, src);
 }
 
@@ -66,9 +66,10 @@ int64_t LimeSyncController::timestampOffset(const IDevice* master,
     const uint64_t tsSlave  = getHardwareTimestamp(slave);
     const int64_t  offset   = static_cast<int64_t>(tsMaster) - static_cast<int64_t>(tsSlave);
 
-    LOG_INFO("SyncController::timestampOffset: master=" + std::to_string(tsMaster)
-             + " slave=" + std::to_string(tsSlave)
-             + " Δ=" + std::to_string(offset) + " samples");
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+            "SyncController::timestampOffset: master=" + std::to_string(tsMaster)
+            + " slave=" + std::to_string(tsSlave)
+            + " Δ=" + std::to_string(offset) + " samples");
     return offset;
 }
 
@@ -85,8 +86,8 @@ void LimeSyncController::armTrigger(const QList<IDevice*>& devices) {
     // Stub: just remember the device list.
     armedDevices_ = devices;
     armed_ = true;
-    LOG_INFO("SyncController::armTrigger: " + std::to_string(devices.size())
-             + " devices armed");
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+            "SyncController::armTrigger: " + std::to_string(devices.size()) + " devices armed");
     emit triggerArmed(devices.size());
 }
 
@@ -106,9 +107,9 @@ void LimeSyncController::fireTrigger(uint64_t targetTimestamp) {
     //     Set master GPIO high → all slaves see rising edge → streaming begins.
     //
     // Stub: just log.
-    LOG_INFO("SyncController::fireTrigger: targetTimestamp="
-             + std::to_string(targetTimestamp)
-             + " devices=" + std::to_string(armedDevices_.size()));
+    LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Info,
+            "SyncController::fireTrigger: targetTimestamp=" + std::to_string(targetTimestamp)
+            + " devices=" + std::to_string(armedDevices_.size()));
 
     armedDevices_.clear();
     armed_ = false;

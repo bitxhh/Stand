@@ -21,8 +21,9 @@ void CombinedRxController::startStream(const StreamConfig& cfg) {
     const int nCh = cfg.channels.size();
     if (nCh == 0) return;
 
-    LOG_INFO("CombinedRxController::startStream: " + std::to_string(nCh)
-             + " channels, lo=" + std::to_string(cfg.loFreqMHz) + " MHz");
+    LOG_CAT(LogCat::kCombinedRx, LogLevel::Info,
+            "CombinedRxController::startStream: " + std::to_string(nCh)
+            + " channels, lo=" + std::to_string(cfg.loFreqMHz) + " MHz");
 
     // ── Combined pipeline (receives merged I/Q) ─────────────────────────────
     combinedPipeline_ = new Pipeline(pool_, this);
@@ -185,10 +186,6 @@ void CombinedRxController::removeExtraHandler(IPipelineHandler* h) {
     extraHandlers_.erase(
         std::remove(extraHandlers_.begin(), extraHandlers_.end(), h),
         extraHandlers_.end());
-}
-
-double CombinedRxController::snrDb() const {
-    return demodHandler_ ? demodHandler_->snrDb() : 0.0;
 }
 
 double CombinedRxController::ifRms() const {

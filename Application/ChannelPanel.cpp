@@ -679,31 +679,8 @@ void ChannelPanel::onStreamStopped() {
 void ChannelPanel::updateMetrics() {
     if (!demodLevelLabel_) return;
     if (!ctrl_ || !ctrl_->demodHandler()) return;
-
-    const double snr   = ctrl_->snrDb();
     const double ifRms = ctrl_->ifRms();
-
-    constexpr int    kBlocks = 10;
-    constexpr double kSnrMax = 15.0;
-    const int filled = static_cast<int>(
-        std::clamp(snr / kSnrMax * kBlocks, 0.0, static_cast<double>(kBlocks)));
-
-    QString bar;
-    bar.reserve(kBlocks);
-    for (int i = 0; i < kBlocks; ++i)
-        bar += (i < filled) ? QChar(0x25AE) : QChar(0x25AF);
-
-    const QString color = (snr > 6.0)  ? "#00cc44"
-                        : (snr > 2.0)  ? "#ffaa00"
-                        :                "#888888";
-
-    demodLevelLabel_->setStyleSheet(
-        QString("color: %1; font-size: 10px;").arg(color));
-    demodLevelLabel_->setText(
-        QString("%1  SNR %2 dB  IF %3")
-            .arg(bar)
-            .arg(snr,   0, 'f', 1)
-            .arg(ifRms, 0, 'f', 3));
+    demodLevelLabel_->setText(QString("IF %1").arg(ifRms, 0, 'f', 3));
 }
 
 void ChannelPanel::openRecordSettings()

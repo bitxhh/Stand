@@ -71,7 +71,6 @@ public:
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     [[nodiscard]] BaseDemodHandler* demodHandler() const { return demodHandler_; }
-    [[nodiscard]] double snrDb() const;
     [[nodiscard]] double ifRms() const;
 
 signals:
