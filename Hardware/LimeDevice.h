@@ -125,6 +125,7 @@ private:
     // checkPauseForRetune, stops/reconfigures/restarts the LMS stream
     // (needed to flush the FPGA FIFO), then releases the worker.
     void performStreamingRetune(int rxIdx, double hz);
+    void resetDcAfterRetune(int idx);
 
     lms_device_t*  handle_{nullptr};
     lms_info_str_t deviceId_{};

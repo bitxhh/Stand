@@ -383,6 +383,24 @@ void LimeDevice::calibrateChannel(int idx, double calBwHz) {
             "Calibration ch" + std::to_string(idx) + " done: " + serial_);
 }
 
+// After an LO change the analog DC correction values programmed by LMS_Calibrate
+// are stale (they were computed for the old carrier frequency). LMS_Calibrate
+// also stops the RXTSP automatic DC tracking loop (DCLOOP_STOP=1) to lock the
+// calibrated values. With a new LO those locked values no longer cancel the DC
+// offset, producing the visible zero-bin spike. Fix: reset analog corrections to
+// the chip default (neutral = 64 = mid-scale) and re-enable the tracking loop so
+// it converges to the correct value within a few sample blocks at the new LO.
+void LimeDevice::resetDcAfterRetune(int idx) {
+    LMS_WriteParam(handle_, LMS7_MAC, idx + 1);           // MAC=1→ch0, MAC=2→ch1
+    LMS_WriteParam(handle_, LMS7_DCOFFI_RFE,        64);  // analog I correction → neutral
+    LMS_WriteParam(handle_, LMS7_DCOFFQ_RFE,        64);  // analog Q correction → neutral
+    LMS_WriteParam(handle_, LMS7_EN_DCOFF_RXFE_RFE,  1);  // keep analog DC block enabled
+    LMS_WriteParam(handle_, LMS7_DCLOOP_STOP,        0);  // re-enable auto DC tracking loop
+    LMS_WriteParam(handle_, LMS7_DC_BYP_RXTSP,       0);  // digital correction active
+    LOG_CAT(LogCat::kCalibration, LogLevel::Debug,
+            "DC tracking re-armed after retune: RX" + std::to_string(idx));
+}
+
 void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels, double calBwHz) {
     if (state_ < DeviceState::Ready)
         throw LimeInitException("Cannot calibrate — device not initialized");
@@ -791,6 +809,13 @@ void LimeDevice::performStreamingRetune(int idx, double hz) {
             LOG_CAT(LogCat::kDeviceLifecycle, LogLevel::Debug,
                     "LO updated: RX" + std::to_string(idx)
                     + " → " + std::to_string(hz / 1e6) + " MHz");
+
+        // Both RX channels share one RXPLL — the LO change affects both.
+        // Reset stale calibrated DC corrections so the tracking loop re-adapts.
+        resetDcAfterRetune(idx);
+        const int other = 1 - idx;
+        if (streams_.count({ChannelDescriptor::RX, other}))
+            resetDcAfterRetune(other);
     }
 
     if (LMS_StartStream(&it->second) != 0) {
