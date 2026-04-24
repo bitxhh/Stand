@@ -445,9 +445,12 @@ void LimeDevice::calibrate(const QList<ChannelDescriptor>& channels, double calB
         }
     }
 
-    // Re-setup both RX channels to restore the WinUSB I/O warmup context (same as init does).
+    // Re-setup only the channels that were actually enabled during init().
+    // Calling setupStream() for a disabled channel re-enables its hardware path
+    // via LMS_EnableChannel(true), which corrupts the USB streaming context for
+    // single-channel configurations (RX1-only or RX0-only).
     for (int ch = 0; ch < 2; ++ch)
-        setupStream({ChannelDescriptor::RX, ch});
+        if (enabledRx_[ch]) setupStream({ChannelDescriptor::RX, ch});
     LOG_CAT(LogCat::kCalibration, LogLevel::Info,
             "Stream handles rebuilt after calibration: " + serial_);
 }
@@ -663,6 +666,8 @@ void LimeDevice::teardownAllStreams() {
         LMS_DestroyStream(handle_, &stream);
     }
     streams_.clear();
+    std::lock_guard lock(startStreamMutex_);
+    startedStreams_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +678,32 @@ void LimeDevice::prepareStream(ChannelDescriptor ch) {
     // Teardown если уже был setup от прошлого сеанса
     if (streams_.count(ch)) teardownStream(ch);
     setupStream(ch);
+
+    // Prime the WinUSB transfer context. On the first start after init/calibrate,
+    // concurrent LMS_StartStream calls from two worker threads race inside
+    // LimeSuite's USB layer and leave LMS_RecvStream timing out indefinitely.
+    // A sequential start+stop here (UI thread, before any worker runs) primes
+    // the USB endpoint at the OS level. After the warmup cycle we destroy the
+    // handle and call setupStream again: on WinUSB a stopped (not destroyed)
+    // handle cannot be restarted, but the endpoint stays primed so the fresh
+    // handle the workers receive starts cleanly without any race.
+    {
+        auto& s = streams_.at(ch);
+        if (LMS_StartStream(&s) == 0)
+            LMS_StopStream(&s);
+        else
+            LOG_WARN("prepareStream warmup LMS_StartStream failed for ch"
+                     + std::to_string(ch.channelIndex));
+    }
+    {
+        auto it = streams_.find(ch);
+        if (it != streams_.end()) {
+            LMS_DestroyStream(handle_, &it->second);
+            streams_.erase(it);
+        }
+    }
+    setupStream(ch);
+
     LOG_CAT(LogCat::kStreamIo, LogLevel::Debug,
             "prepareStream done: ch" + std::to_string(ch.channelIndex)
             + " on " + serial_);
@@ -697,25 +728,37 @@ int LimeDevice::readBlock(int16_t* buffer, int count, int timeoutMs) {
 // IDevice: channel-aware stream
 // ---------------------------------------------------------------------------
 void LimeDevice::startStream(ChannelDescriptor ch) {
-    if (!streams_.count(ch)) {
-        // Одиночный канал или prepareStream не вызывался — setup здесь.
+    std::lock_guard lock(startStreamMutex_);
+
+    // Idempotent: UI thread may pre-start all channels sequentially before
+    // workers launch; workers then arrive here and find the stream already
+    // active.  This also serialises concurrent LMS_StartStream calls from
+    // multiple worker threads, which LimeSuite cannot handle safely.
+    if (startedStreams_.count(ch)) return;
+
+    if (!streams_.count(ch))
         setupStream(ch);
-    }
-    // Если prepareStream уже вызывался из UI-потока, LMS_SetupStream
-    // был выполнен до запуска любого воркера и не прервёт другой канал.
 
     auto& stream = streams_[ch];
     if (LMS_StartStream(&stream) != 0) {
         teardownStream(ch);
         throwLime("LMS_StartStream failed for ch" + std::to_string(ch.channelIndex));
     }
-    setState(DeviceState::Streaming);
+    startedStreams_.insert(ch);
+
+    // setState emits a Qt signal — safe to queue from any thread.
+    QMetaObject::invokeMethod(this, [this] { setState(DeviceState::Streaming); },
+                              Qt::QueuedConnection);
     LOG_CAT(LogCat::kStreamIo, LogLevel::Info,
             "LMS_StartStream OK: ch" + std::to_string(ch.channelIndex)
             + " on " + serial_);
 }
 
 void LimeDevice::stopStream(ChannelDescriptor ch) {
+    {
+        std::lock_guard lock(startStreamMutex_);
+        startedStreams_.erase(ch);
+    }
     teardownStream(ch);
     if (streams_.empty() && state_ == DeviceState::Streaming)
         setState(DeviceState::Ready);

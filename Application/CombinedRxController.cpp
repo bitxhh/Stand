@@ -53,6 +53,11 @@ void CombinedRxController::startStream(const StreamConfig& cfg) {
     combiner_ = new IqCombiner(nCh, combinedPipeline_);
     for (int i = 0; i < nCh && i < cfg.gainsDb.size(); ++i)
         combiner_->setChannelGain(i, cfg.gainsDb[i]);
+    // phaseMetric эмитится из worker-нити (IqCombiner::processBlock) — queued.
+    connect(combiner_, &IqCombiner::phaseMetric,
+            this, &CombinedRxController::phaseMetric, Qt::QueuedConnection);
+    connect(combiner_, &IqCombiner::iqImbalance,
+            this, &CombinedRxController::iqImbalance, Qt::QueuedConnection);
 
     combinedPipeline_->notifyStarted(device_->sampleRate());
 
@@ -60,9 +65,14 @@ void CombinedRxController::startStream(const StreamConfig& cfg) {
     finishedCount_ = 0;
     workers_.resize(nCh);
 
-    // prepareStream from UI thread before starting any worker (LimeSuite quirk).
+    // prepareStream + startStream for all channels on the UI thread, sequentially.
+    // LimeSuite cannot handle concurrent LMS_StartStream calls from multiple
+    // worker threads on the same device; pre-starting here makes the workers'
+    // own startStream() calls no-ops (idempotent via LimeDevice::startedStreams_).
     for (int i = 0; i < nCh; ++i)
         device_->prepareStream(cfg.channels[i]);
+    for (int i = 0; i < nCh; ++i)
+        device_->startStream(cfg.channels[i]);
 
     for (int i = 0; i < nCh; ++i) {
         auto& w = workers_[i];
@@ -190,6 +200,18 @@ void CombinedRxController::removeExtraHandler(IPipelineHandler* h) {
 
 double CombinedRxController::ifRms() const {
     return demodHandler_ ? demodHandler_->ifRms() : 0.0;
+}
+
+double CombinedRxController::calibratePhase() {
+    return combiner_ ? combiner_->calibrateNow() : 0.0;
+}
+
+void CombinedRxController::setPhaseCalibrationDeg(double deg) {
+    if (combiner_) combiner_->setPhaseCalibrationDeg(deg);
+}
+
+double CombinedRxController::phaseCalibrationDeg() const {
+    return combiner_ ? combiner_->phaseCalibrationDeg() : 0.0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

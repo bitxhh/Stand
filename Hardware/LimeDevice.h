@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -16,7 +17,9 @@
 //
 // Поток вызовов:
 //   UI thread:     init(), calibrate(), setSampleRate(), setFrequency(), setGain()
-//   Worker thread: startStream(ch), readBlock(ch), stopStream(ch)
+//                  prepareStream(ch), startStream(ch) [multi-channel pre-start]
+//   Worker thread: startStream(ch) [single-ch or no-op if UI pre-started],
+//                  readBlock(ch), stopStream(ch)
 // ---------------------------------------------------------------------------
 class LimeDevice : public IDevice {
     Q_OBJECT
@@ -157,6 +160,11 @@ private:
     bool                            workerParked_[2]     = {false, false};
 
     // ── Per-channel streams ───────────────────────────────────────────────────
+    // startStreamMutex_ serialises LMS_StartStream calls so that multi-channel
+    // pre-start from the UI thread and single-channel start from a worker thread
+    // never race against each other or against LimeSuite internals.
+    std::mutex                                startStreamMutex_;
+    std::set<ChannelDescriptor>               startedStreams_;   // channels with active LMS_StartStream
     std::map<ChannelDescriptor, lms_stream_t> streams_;
     std::map<ChannelDescriptor, uint64_t>     lastTimestamp_;  // from lms_stream_meta_t
 

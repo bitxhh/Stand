@@ -954,7 +954,7 @@ DeviceSelectionWindow::DeviceSelectionWindow(IDeviceManager& manager,
     , manager(manager)
     , sessions_(sessions)
 {
-    setWindowTitle("Stand — SDR");
+    setWindowTitle("Apex");
     setMinimumWidth(320);
     auto* layout = new QVBoxLayout(this);
 

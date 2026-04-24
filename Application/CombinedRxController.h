@@ -85,12 +85,23 @@ public:
     [[nodiscard]] BaseDemodHandler* demodHandler() const { return demodHandler_; }
     [[nodiscard]] double ifRms() const;
 
+    // Межканальная фазовая калибровка. calibratePhase() снимает текущую сырую
+    // фазу как zero-reference (каналы должны принимать один и тот же сигнал).
+    // Возвращает применённый offset в градусах; 0 если нет данных/combiner'а.
+    double calibratePhase();
+    void   setPhaseCalibrationDeg(double deg);
+    double phaseCalibrationDeg() const;
+
 signals:
     void fftReady(FftFrame frame);
     void demodStatus(const QString& msg, bool isError);
     void streamStatus(const QString& msg);
     void streamError(const QString& error);
     void streamFinished();
+    // rawDeg/calDeg: [-180, 180]; coherence: [0, 1]
+    void phaseMetric(double rawDeg, double calDeg, double coherence);
+    // Per-channel I/Q imbalance: ampDb ~ 0 dB, crossCorr ~ 0 when balanced/ortho.
+    void iqImbalance(int channelIndex, double ampDb, double crossCorr);
 
 private:
     struct WorkerEntry {
